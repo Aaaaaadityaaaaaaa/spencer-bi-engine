@@ -1,55 +1,68 @@
 # CURRENT_STATE.md
 
-_Last reconciled against actual code + a real test run on 2026-08-21._
+_Full regeneration (AP-4). Reconciled against actual code + a full green regression sweep against **real Redis** on 2026-08-21._
 
-## Implemented (verified)
-- Repo scaffolding: FastAPI + routers + services (`duckdb_manager.py`, `redis_manager.py`, `ai_service.py`, `sql_validator.py`) + Vue 3/TS/Tailwind/TanStack/ECharts frontend shell
-- `docker-compose.yml` (Redis service defined — NOT runnable in current dev env, see Known Gaps)
-- `pyproject.toml` (uv-intended; `uv` unavailable in dev environment — pip-compatible fallback in use)
-- `GET /health` endpoint (liveness only — does not verify Redis/DuckDB reachability)
-- `duckdb_manager.py`: `ThreadPoolExecutor`/`run_in_executor` wrapper; **single `duckdb.connect()` per ADR-010.** `run_readwrite()` and `run_sandboxed()` (unconditional-rollback transaction) implemented and verified — sequential (TASK-001-FIX-02) and concurrent (TASK-002).
+## How To Reproduce The Current Green State
+Real Redis must be running first (it is NOT a service — it does not survive a reboot, see ADR-011 amendment):
+```
+cd "E:/SPENCER V1/tools/redis" && ./redis-server.exe --port 6379 --save 60 1
+```
+Then, from `backend/`:
+```
+python test_transaction_rollback_full.py   # 4/4  rollback sandbox (ADR-010)
+python test_concurrent.py                  # 2/2  concurrency (TASK-002)
+python test_multitable.py                  # 4/4  multi-table + injection (TASK-003)
+python test_sql_validator.py               # 25/25 adversarial SQL validation (ADR-013)
+python test_ingestion.py                   # single-table ingestion
+```
+`test_multitable.py` prints `REDIS BACKEND IN USE: redis` when real Redis served the run, or `fakeredis` when it fell back. **If it says `fakeredis`, the Redis proof is void** (AP-9).
 
-## Resolved
-- ADR-003's dual read-write/read-only connection design was tested and disproven; reported via `ARCHITECTURAL_CHANGE_REQUEST`. **Superseded by ADR-010.** (Correction 2026-08-21: the prior version of this file still listed the disproven dual-connection design as "implemented" under line 8 — that was doc drift; the code has only ever shipped the single-connection model.)
-- ADR-010 (single-connection transaction-rollback) implemented and verified sequentially + concurrently. AI-query security model closed.
-
-## Implemented But NOT Yet Verified (do NOT treat as done)
-- **AI layer, cleaning, charting, scheduling remain genuinely unbuilt** — see Not Started below.
-
-## Ingestion — VERIFIED 2026-08-21 (except real-Redis leg)
-`routers/session.py` was already substantially implemented (NOT stubbed, contrary to the prior version of this file). Verification run + fixes completed under TASK-003:
-- **Single-table upload VERIFIED** with real output against `backend/messy.csv` (100 rows, 45+ cols): `ambiguous_date` → DATE, `mixed_col` → VARCHAR (card. 84), `mostly_null` → VARCHAR (card. 1), `category` → VARCHAR (card. 3).
-- **Multi-table coexistence VERIFIED** (was the standing blocker): `..._messy` + `..._regions` in one session, distinct names, row counts after 2nd upload `primary=100, second=6` — primary untouched, both queryable. Same-filename re-upload now returns **409** instead of silently clobbering.
-- **`GET /schema` VERIFIED** returning the v1.2 multi-table array with correct `is_primary` flags. (It was already correct — the "stubbed against old v1.1 shape" claim was itself stale; `models/schemas.py` needed no change.)
-- **Schema-cache round-trip VERIFIED** — correctly keyed by both table names — **but served by `fakeredis`, not real Redis.** Criterion #3 remains OPEN.
-
-## Currently Blocked
-- **TASK-003 criterion #3 only** (real Redis value via `redis-cli GET`). Decision made: **Memurai** (ADR-011). `redis_manager.py` is now wired for a real client with explicit logged fallback, so this closes as soon as Memurai is installed — re-run `test_multitable.py` and confirm it prints `REDIS BACKEND IN USE: redis`. Nothing else is blocked.
+## Verified Implemented
+- **Connection layer / AI-SQL security model — CLOSED.** Single DuckDB connection (ADR-010); `run_sandboxed()` wraps AI SQL in an unconditional-rollback transaction. Verified sequentially (TASK-001-FIX-02) and concurrently (TASK-002). Both suites now idempotent and re-runnable (AP-7).
+- **Ingestion & session management (Phase 2) — VERIFIED.** `POST /sessions`, `POST /sessions/{id}/tables`, `GET /sessions/{id}/schema` (correct v1.2 multi-table array shape), plus type inference, per-column cardinality, low-cardinality sample capture, and schema-context caching.
+  - Single-table, real DuckDB inference on the adversarial CSV (100 rows, 45+ cols): `ambiguous_date` → **DATE**, `mixed_col` → **VARCHAR** (card. 84), `mostly_null` → **VARCHAR** (card. 1), `category` → **VARCHAR** (card. 3, samples `["Blue","Red","Green"]`).
+  - **Multi-table coexistence VERIFIED** (the long-standing blocker): `..._messy` + `..._regions` in one session, distinct names, row counts after 2nd upload `primary=100, second=6` — primary untouched, both queryable. Same-filename re-upload returns **409** instead of silently clobbering.
+  - **Real-Redis proof CAPTURED** — `redis-cli GET schema:{uuid}` from an independent process returned the app-written value, a 2-table dict (2729 bytes), incl. correct BOOLEAN round-trip (`active: [false, true]`). RDB durability confirmed (`rdb_last_bgsave_status:ok`, `dump.rdb` written).
+- **SQL validator (ADR-013)** — fail-closed, 25/25 adversarial cases. This is Phase 6 defense layer 1 only; the rest of Phase 6 is unbuilt.
+- **Repo is now under git** — initial commit `26639d3`, 68 files tracked, `.gitignore` verified excluding `spencer.db`, `uploads/`, `node_modules/`, `tools/`. `.env.example` added; `.env` gitignored.
+- **CORS** — explicit env-driven origin allowlist (`SPENCER_CORS_ORIGINS`), default `localhost:5173`. App version bumped to `1.2.0` to match the contract.
 
 ## Not Started
-- Cleaning/undo-redo implementation (endpoints stubbed only)
-- Pagination / TanStack wiring
-- Visual canvas / charting
-- AI layer (prompt assembly, sqlglot validation, retry loop, Redis caching)
-- Scheduling (APScheduler wiring — job store persistence not yet configured)
+- Cleaning/undo-redo implementation (endpoints stubbed only) — Phase 3
+- Pagination / TanStack wiring — Phase 4
+- Visual canvas / charting — Phase 5
+- AI layer: prompt assembly, `ai_service.generate_sql()` (still `pass`), 3-retry loop, Review Gate UI, Redis query caching — Phase 6 (validator done, nothing else)
+- Scheduling / APScheduler wiring — Phase 7
 - Frontend networking (Axios/Fetch) — no live calls wired yet
+- Ibis is **not yet a dependency** and is not used anywhere; adopting it (ADR-007) is part of Phase 3
 
-## Known Gaps
-- **[RESOLVED 2026-08-21] `redis_manager.py` real-Redis client** — rewritten per ADR-011 (real `redis.Redis` + logged fakeredis fallback + inspectable `.backend`). Real-Redis *proof* still pending Memurai.
-- **[RESOLVED 2026-08-21] `main.py` `get_readonly_connection()` AttributeError** — repointed to `get_readwrite_connection()`.
-- **[RESOLVED 2026-08-21] Ingestion SQL injection / path traversal** — fixed via bound parameters + identifier escaping + filename sanitization; proven with a sentinel-table test (ADR-012).
-- **[RESOLVED 2026-08-21] Security proof suites were non-repeatable** — `test_transaction_rollback_full.py` / `test_concurrent.py` created `probe_table` with no teardown against the persistent `spencer.db`, so they could only pass once and then failed with a `CatalogException` that *impersonates a security regression*. Made idempotent and demonstrated green across two consecutive runs (12/12 assertions). See CODING_STANDARDS.md AP-7.
-- [MINOR] CORS IS configured in `main.py` as `allow_origins=["*"]` + `allow_credentials=True` (invalid browser combo). Prior note "No CORS yet" was wrong. Needs a real origin allowlist before frontend networking.
-- [MINOR] FastAPI app `version="1.1.0"` lags the v1.2 contract.
-- No session/data cleanup mechanism (uploads, DuckDB tables, Redis keys accumulate indefinitely). Note: `backend/uploads/` already holds orphaned session dirs from test runs, and `spencer.db` accumulates test tables — visible evidence of this gap.
+## Resolved This Session (2026-08-21)
+| Sev | Issue | Resolution |
+|---|---|---|
+| MAJOR | Ingestion SQL injection + path traversal on the **non-sandboxed** path (ADR-010 never covered ingestion) | Bound parameters, identifier quote-escaping, filename sanitization (ADR-012). Sentinel-table proof: `DROP` no longer fires |
+| MAJOR | `sql_validator.validate()` returned `True` unconditionally — fail-open | Reimplemented fail-closed with sqlglot (ADR-013), 25/25 adversarial |
+| MAJOR | `redis_manager` could never reach real Redis (hardcoded fakeredis, ignored host/port) | Real client + explicit logged fallback + `.backend` (ADR-011) |
+| MAJOR | `main.py` called removed `get_readonly_connection()` → `AttributeError` | Repointed to `get_readwrite_connection()` |
+| MAJOR | Both security proof suites could only pass **once** (no teardown vs persistent `spencer.db`); failure impersonated a security regression | Made idempotent, shown green twice consecutively (AP-7) |
+| MAJOR | Docs contradicted code on the security-critical path (`CURRENT_STATE` claimed the disproven dual-connection design was implemented; ADR-010 status stale; ingestion listed "Not Started" while implemented) | Reconciled; ADR-008 superseded, ADR-011/012/013 + AP-7/8/9 added |
+| MINOR | CORS `allow_origins=["*"]` + `allow_credentials=True` (invalid combo browsers reject) | Env-driven explicit allowlist |
+| MINOR | `fakeredis` imported but never declared — fresh install would fail at import | Declared under `[project.optional-dependencies] dev` |
+| MINOR | `set_json` would crash on DuckDB DATE/Decimal sample values | `json.dumps(..., default=str)` |
+| MINOR | App version `1.1.0` lagged the v1.2 contract | Bumped to `1.2.0` |
+
+## Known Gaps (open)
+- **Redis is a manually-started portable binary, not a service** — does not survive reboot. Must be resolved before Phase 7 (APScheduler persistence) is trusted operationally. See ADR-011 amendment.
+- **Schema cache keys have no TTL** (`redis-cli TTL` → `-1`) — concrete instance of the session-cleanup gap below.
+- No session/data cleanup mechanism — `backend/uploads/` already holds orphaned session dirs and `spencer.db` accumulates test tables from every run.
 - APScheduler job store not yet persistent (Redis-backed) — scheduled jobs would vanish on restart.
 - No LLM API cost/rate control.
-- No file upload size/type validation (size cap, MIME/extension allowlist) — filename is now sanitized, but nothing bounds upload size.
+- No file upload **size** cap or MIME/extension allowlist (filename is now sanitized, but nothing bounds size).
 - No row cap on ad-hoc `/execute` results.
-- Secrets management (`.env` + `.gitignore`) not yet confirmed in place.
-- This project directory is **not a git repository** yet — the "versioned docs in the repo" are not actually under version control.
+- `GET /health` is liveness-only — does not verify Redis/DuckDB reachability (and so would not have surfaced the fakeredis substitution).
+- No central FastAPI exception handler yet (CODING_STANDARDS requires uniform error shape).
+- `ai_service.generate_sql()` is still `pass` — must not be wired until Phase 6 is a real task.
+- Portable Redis is **5.0.14.1**; production Redis 6/7 supports RESP3. `protocol=2` is pinned for compatibility — revisit if the server is upgraded.
 
 ## Next Recommended Task
-1. **Install Memurai** → close TASK-003 criterion #3 (only remaining item on TASK-003).
-2. **TASK-004 — Data Cleaning ("Drop & Scrub")** per Phase 3: dedupe, missing-value handling, type change, calculated columns, per-table undo/redo (ADR-004 snapshots, capped 5–10), all built via Ibis (ADR-007). Note Ibis is **not yet a dependency** — adding it is part of that task.
-
+**TASK-004 — Data Cleaning ("Drop & Scrub")** per Phase 3: dedupe, missing-value handling (zero/mean/median/custom), type change, calculated columns, per-table undo/redo (ADR-004 snapshots, capped 5–10), all built via **Ibis** (ADR-007 — adding the dependency is part of this task).
+Pre-req reminder: start real Redis first, and require `REDIS BACKEND IN USE: redis` in any proof that touches the cache.

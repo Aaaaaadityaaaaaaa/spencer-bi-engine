@@ -59,7 +59,8 @@ None specific — full load-testing at scale is a later phase (per ROADMAP), not
 All four proofs in Acceptance Criteria present as real output; `GET /schema` returns the corrected v1.2 shape.
 
 ## Status
-PARTIALLY_VERIFIED — awaiting sign-off. Re-scoped 2026-08-21 from "implement" to "verify + fix": the ingestion code already existed (contrary to CURRENT_STATE.md, which listed it as Not Started). 3 of 4 acceptance criteria met with real output; criterion #3 (real Redis) formally OPEN pending Memurai (ADR-011).
+**VERIFIED — AWAITING SIGN-OFF.** All 4 acceptance criteria MET with real output against real Redis; full regression sweep green (rollback 4/4, concurrency 2/2, multi-table+injection 4/4, SQL validator 25/25, ingestion green).
+Originally Re-scoped 2026-08-21 from "implement" to "verify + fix": the ingestion code already existed (contrary to CURRENT_STATE.md, which listed it as Not Started). 3 of 4 acceptance criteria met with real output; criterion #3 (real Redis) formally OPEN pending Memurai (ADR-011).
 
 ## Proofs Captured 2026-08-21 (real output, run via `python test_multitable.py`)
 
@@ -76,7 +77,22 @@ Real DuckDB inference on the adversarial columns:
 `t_<uuid>_messy` (is_primary **true**) and `t_<uuid>_regions` (is_primary **false**).
 Note: this was already correct in code — the doc claim that it was "stubbed against the old v1.1 single-table shape" was itself stale.
 
-### Criterion 3 — real Redis value via redis-cli GET (**OPEN / NOT MET**)
+### Criterion 3 — real Redis value via redis-cli GET (**MET 2026-08-21**)
+Proven against a **real** `redis-server` (`redis_version:5.0.14.1`, `tcp_port:6379`, real `redis-cli` PONG), NOT fakeredis. Test now prints `REDIS BACKEND IN USE: redis`.
+`redis-cli KEYS 'schema:*'` -> `schema:3126796e-afed-427f-9499-baebeee980f5`; `TYPE` -> `string`; `STRLEN` -> `2729`; `TTL` -> `-1` (no expiry -- see session-cleanup gap).
+`redis-cli GET` returned the app-written 2-table dict, including the second table in full:
+```
+"t_..._regions": {"cardinality": {"region_id": 6, "region_name": 4, "active": 2},
+ "samples": {"region_name": ["North","South","East","West"], "active": [false, true]},
+ "is_primary": false, "ddl": "CREATE TABLE t_..._regions (\"region_id\" BIGINT, \"region_name\" VARCHAR, \"active\" BOOLEAN);"}
+```
+Durability (fakeredis could never certify this): `BGSAVE` -> `rdb_last_bgsave_status:ok`, `dump.rdb` on disk.
+
+**Two real defects surfaced only because this was finally run against real Redis:**
+1. Memurai (ADR-011's chosen runtime) **failed to install** -- MSI 1603, root cause `SFXCA: Failed to create temp directory. Error code 5`. Pivoted to a portable `redis-server.exe` in `tools/redis/` (gitignored). See ADR-011 amendment.
+2. Even with real Redis running, the client **still fell back to fakeredis** -- `redis-py` 8.1 negotiates RESP3 via `HELLO 3`, unsupported by Redis 5. Pinned `protocol=2`. Had the fallback stayed silent (as originally written), this run would have reported a green "real Redis" proof while testing an in-memory fake. See AP-9.
+
+### Criterion 3 — superseded note (previously OPEN)
 Cache round-trip verified, but served by **fakeredis**, not real Redis. Test prints its backend explicitly:
 `RedisManager falling back to fakeredis (TimeoutError: Timeout connecting to server)` / `REDIS BACKEND IN USE: fakeredis`.
 Cached value under `schema:{session_uuid}` is correctly keyed by BOTH table names:
@@ -99,8 +115,8 @@ Blocked by ADR-011 (Memurai not yet installed). **Do not mark this criterion sat
 - **[MINOR] `set_json` could crash on DuckDB DATE/Decimal sample values** (not JSON-serializable). Added `default=str`.
 
 ## Remaining To Close This Task
-1. Install Memurai, then re-run `test_multitable.py` and confirm it prints `REDIS BACKEND IN USE: redis`; capture a real `redis-cli GET schema:{session_uuid}`.
-2. Architect sign-off on the 4 fixes above.
+1. ~~Install Memurai / capture real Redis proof~~ — **DONE**, see Criterion 3 above.
+2. **Architect sign-off** on the fixes (ADR-012 injection, ADR-013 fail-closed validator, ADR-011 Redis client, `main.py` repoint, AP-7 idempotency, CORS). This is the only open item and is not self-serviceable — I both implemented and reviewed these.
 
 ## Files Actually Changed
 `backend/routers/session.py`, `backend/services/redis_manager.py`, `backend/main.py` (1 line), plus new `backend/test_multitable.py` and `backend/regions.csv` (second-table fixture).

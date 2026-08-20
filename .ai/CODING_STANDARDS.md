@@ -28,6 +28,13 @@ ADR-003's dual-connection design (read-write + read-only to the same DuckDB file
 **AP-8: Trusting a security control to cover a path it doesn't actually cover.**
 ADR-010's rollback sandbox genuinely secures AI-generated SQL — and that created a blind spot. Ingestion interpolated a user-controlled filename straight into `read_csv_auto('{file_path}')` on `run_readwrite()`, the path with **no** rollback protection, so a filename containing `'` could break out of the string literal and persist injected DDL/DML. Verified live pre-fix, and verified neutralized post-fix via a sentinel table (`x'); DROP TABLE sentinel; --.csv` → sentinel survives). **Rule: when reasoning about whether input is safe, name the exact execution path it takes and confirm the control applies to *that* path.** "We're protected because of ADR-010" was true of one path and false of the one that mattered here. Related to AP-6: the failure is again an assumption that went untested.
 
+**AP-9: Security stubs that fail OPEN, and fallbacks that fail SILENTLY.**
+Two instances, same root cause — a component that was not yet load-bearing was written to succeed by default, so nothing looked wrong.
+- `SQLValidator.validate()` was `return True`, unconditionally. It reads as a working security control and is a rubber stamp; the first time Phase 6 called it, `DROP TABLE` would have been approved. It would also have quietly reduced the documented 3-layer AI-SQL defense to 2. See ADR-013.
+- `redis_manager` silently substituted `fakeredis`, so **every** Redis "proof" in this project's history actually exercised an in-memory fake. When a real Redis was finally started, the client *still* fell back (redis-py RESP3 `HELLO` vs Redis 5) — and only the explicit `.backend` attribute plus a logged warning revealed it. A silent fallback had turned a green test into a meaningless one.
+
+**Rule:** a stub for a security-relevant component must fail **closed** (`return False` / raise `NotImplementedError`), never open. A fallback must be **loud** — logged, and exposed as inspectable state (e.g. `redis_manager.backend`) that proof scripts are required to print. If a test cannot tell you *which* implementation served it, it cannot certify anything. Corollary to AP-5: attached proof is only proof if it also identifies what produced it.
+
 ## Query Construction Rules
 - Spencer's own queries (transforms, chart aggregation, joins) are built via **Ibis expressions**, compiled to SQL, then executed through the existing connection wrapper. Ibis never opens its own connection or executes directly in this codebase.
 - Ibis's table schema must be **re-fetched per request**, never cached long-term — stale schema after a transform produces incorrect SQL silently.
@@ -41,7 +48,7 @@ ADR-010's rollback sandbox genuinely secures AI-generated SQL — and that creat
 ## Naming Conventions
 - Table: `t_{session_uuid}_{tablename}`
 - Snapshot: `backup_{session_uuid}_{tablename}_step_{n}`
-- Upload path: `uploads/{session_uuid}/{filename}`
+- Upload path: `uploads/{session_uuid}/{sanitized_filename}` — the on-disk name is derived from the sanitized table name plus a whitelisted extension, never the raw client-supplied `filename` (path traversal / SQL-breakout vector, see AP-8).
 
 ## Error Handling
 - Uniform error shape (see API.md) enforced via a **central FastAPI exception handler**, not per-router formatting.
