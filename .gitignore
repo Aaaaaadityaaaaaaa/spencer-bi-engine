@@ -39,3 +39,4 @@ npm-debug.log*
 
 # --- Local dev tooling (portable Redis binaries, ~12MB — not source) ---
 tools/
+
