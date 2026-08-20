@@ -1,0 +1,26 @@
+[project]
+name = "spencer-backend"
+version = "0.1.0"
+description = "Project Spencer Backend API"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "duckdb",
+    "redis",
+    "sqlglot",
+    "apscheduler",
+    "pydantic",
+    "python-multipart",
+    "msgpack",
+]
+
+[project.optional-dependencies]
+# fakeredis was imported by services/redis_manager.py without ever being
+# declared -- a fresh `uv sync`/`pip install .` would have failed at import.
+# It is the test-only fallback backend (ADR-011).
+dev = [
+    "fakeredis",
+    "httpx",
+]

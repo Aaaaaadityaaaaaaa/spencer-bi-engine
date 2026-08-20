@@ -1,0 +1,41 @@
+# --- Secrets / env ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# --- Spencer runtime data (must never be committed) ---
+# Persistent DuckDB file: contains uploaded user data + accumulated test tables
+backend/spencer.db
+backend/spencer.db.wal
+*.duckdb
+# Uploaded files, one dir per session
+backend/uploads/
+
+# --- Node / frontend ---
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+npm-debug.log*
+
+# --- Local dev tooling (portable Redis binaries, ~12MB — not source) ---
+tools/

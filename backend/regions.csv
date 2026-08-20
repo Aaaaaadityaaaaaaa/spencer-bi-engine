@@ -1,0 +1,7 @@
+region_id,region_name,active
+1,North,true
+2,South,true
+3,East,false
+4,West,true
+5,North,false
+6,South,true
