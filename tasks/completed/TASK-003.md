@@ -59,7 +59,7 @@ None specific — full load-testing at scale is a later phase (per ROADMAP), not
 All four proofs in Acceptance Criteria present as real output; `GET /schema` returns the corrected v1.2 shape.
 
 ## Status
-**VERIFIED — AWAITING SIGN-OFF.** All 4 acceptance criteria MET with real output against real Redis; full regression sweep green (rollback 4/4, concurrency 2/2, multi-table+injection 4/4, SQL validator 25/25, ingestion green).
+**COMPLETED — signed off 2026-08-21 (closed by commit c28573c).** All 4 acceptance criteria MET with real output against real Redis; full regression sweep green (rollback 4/4, concurrency 2/2, multi-table+injection 4/4, SQL validator 25/25, ingestion green).
 Originally Re-scoped 2026-08-21 from "implement" to "verify + fix": the ingestion code already existed (contrary to CURRENT_STATE.md, which listed it as Not Started). 3 of 4 acceptance criteria met with real output; criterion #3 (real Redis) formally OPEN pending Memurai (ADR-011).
 
 ## Proofs Captured 2026-08-21 (real output, run via `python test_multitable.py`)
@@ -116,7 +116,7 @@ Blocked by ADR-011 (Memurai not yet installed). **Do not mark this criterion sat
 
 ## Remaining To Close This Task
 1. ~~Install Memurai / capture real Redis proof~~ — **DONE**, see Criterion 3 above.
-2. **Architect sign-off** on the fixes (ADR-012 injection, ADR-013 fail-closed validator, ADR-011 Redis client, `main.py` repoint, AP-7 idempotency, CORS). This is the only open item and is not self-serviceable — I both implemented and reviewed these.
+2. **Architect sign-off** on the fixes (ADR-012 injection, ADR-013 fail-closed validator, ADR-011 Redis client, `main.py` repoint, AP-7 idempotency, CORS). Signed off 2026-08-21 and closed by commit c28573c.
 
 ## Files Actually Changed
 `backend/routers/session.py`, `backend/services/redis_manager.py`, `backend/main.py` (1 line), plus new `backend/test_multitable.py` and `backend/regions.csv` (second-table fixture).
