@@ -1,3 +1,84 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * Semantic design tokens mirrored from Frappe UI (the design language behind
+ * Frappe Insights). Values are Frappe's own oklch neutrals + blue accent,
+ * numbered radii, and multi-layer elevation shadows. Exposed to Tailwind as
+ * named colors in tailwind.config.js (surface / ink / outline / primary, plus
+ * radius + shadow scales). Light-only for now; the [data-theme="dark"] block is
+ * wired so a later task can drop dark values in without touching components.
+ */
+:root {
+  /* surfaces (backgrounds) */
+  --surface-base: oklch(1 0 0);           /* cards, elevated */
+  --surface-gray-1: oklch(0.979 0 0);     /* page / sidebar */
+  --surface-gray-2: oklch(0.964 0 0);     /* input bg, subtle hover */
+  --surface-gray-3: oklch(0.946 0 0);     /* deeper hover / active nav */
+
+  /* ink (text) */
+  --ink-white: oklch(1 0 0);
+  --ink-gray-3: oklch(0.83 0 0);          /* faint */
+  --ink-gray-4: oklch(0.683 0 0);         /* placeholder / disabled */
+  --ink-gray-5: oklch(0.586 0 0);         /* muted / counts */
+  --ink-gray-6: oklch(0.439 0 0);         /* secondary / labels */
+  --ink-gray-7: oklch(0.341 0 0);         /* strong secondary */
+  --ink-gray-8: oklch(0.205 0 0);         /* body */
+  --ink-gray-9: oklch(0.168 0 0);         /* headings */
+
+  /* outline (borders) */
+  --outline-gray-1: oklch(0.946 0 0);     /* default border */
+  --outline-gray-2: oklch(0.913 0 0);     /* stronger border */
+  --outline-gray-3: oklch(0.83 0 0);      /* hover border / dashed dropzone */
+  --outline-gray-4: oklch(0.683 0 0);     /* focus border */
+
+  /* primary accent = Frappe blue */
+  --primary-1: oklch(0.976 0.011 243.65);   /* tint bg */
+  --primary-2: oklch(0.96 0.021 241.348);   /* tint bg / active nav */
+  --primary-3: oklch(0.88 0.061 242.553);   /* tint border */
+  --primary-5: oklch(0.641 0.186 251.565);  /* accent / link / drag border */
+  --primary-6: oklch(0.587 0.174 252.167);  /* button default */
+  --primary-7: oklch(0.561 0.168 252.355);  /* button hover */
+
+  /* semantic red (errors) */
+  --surface-red-1: oklch(0.978 0.011 17.34);
+  --outline-red-2: oklch(0.915 0.044 17.978);
+  --ink-red-6: oklch(0.556 0.198 26.552);
+
+  /* semantic green / amber (status + future charts) */
+  --ink-green-7: oklch(0.53 0.122 156.15);
+  --ink-amber-7: oklch(0.612 0.136 63.758);
+
+  /* radius scale (Frappe numbered) */
+  --radius-1: 4px;
+  --radius-2: 5px;
+  --radius-3: 6px;
+  --radius-4: 8px;
+  --radius-5: 10px;
+  --radius-6: 12px;
+  --radius-7: 16px;
+
+  /* elevation (border-led; subtle multi-layer, inset highlight) */
+  --elevation-sm: inset 0px 0.25px 1.5px 0px #ffffff29, 0px 0px 1px 0px #00000033, 0px 1px 3px 0px #00000024;
+  --elevation-base: inset 0px 0.25px 1.5px 0px #ffffff29, 0px 0px 1.5px 0px #00000029, 0px 2px 5px 0px #00000024;
+  --elevation-md: inset 0px 0.25px 1.5px 0px #ffffff29, 0px 0px 1.5px 0px #00000026, 0px 0px 6px 2px #0000000a, 0px 6px 12px -2px #00000014;
+
+  /* focus ring */
+  --focus-ring: 0px 0px 0px 2px oklch(0.83 0 0 / 0.9);
+}
+
+/* Dark theme deferred to a later task; selector wired now so it's a drop-in. */
+[data-theme="dark"] {
+  /* intentionally empty for TASK-008 (light-only) */
+}
+
+@layer base {
+  html {
+    font-family: theme('fontFamily.sans');
+    color: var(--ink-gray-8);
+    background-color: var(--surface-gray-1);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}

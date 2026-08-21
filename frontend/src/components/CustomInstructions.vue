@@ -1,28 +1,30 @@
 <script setup lang="ts">
+import { Plus, Trash2 } from '@lucide/vue'
 </script>
 
 <template>
-  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden min-h-[250px]">
-    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
-      <h3 class="text-sm font-semibold text-gray-700">Custom Instructions</h3>
-      <button class="text-indigo-600 hover:text-indigo-800 text-xs font-medium">+ Add</button>
+  <div class="min-h-[250px] overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm">
+    <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-4 py-3">
+      <h3 class="text-sm font-semibold text-ink-gray-8">Custom Instructions</h3>
+      <button class="inline-flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:text-primary-7">
+        <Plus class="h-3.5 w-3.5" /> Add
+      </button>
     </div>
-    <div class="p-4 space-y-4">
-      <div class="text-xs text-gray-500 leading-relaxed mb-4">
+    <div class="space-y-4 p-4">
+      <div class="mb-4 text-xs leading-relaxed text-ink-gray-5">
         Define business logic and terms for the AI.
       </div>
-      
+
       <!-- Example Item -->
-      <div class="border border-gray-200 rounded-lg p-3 bg-gray-50 group">
-        <div class="flex justify-between items-start mb-1">
-          <span class="font-semibold text-sm text-gray-800">active users</span>
-          <button class="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+      <div class="group rounded-4 border border-outline-gray-1 bg-surface-gray-1 p-3">
+        <div class="mb-1 flex items-start justify-between">
+          <span class="text-sm font-semibold text-ink-gray-8">active users</span>
+          <button class="text-ink-gray-4 opacity-0 transition-opacity hover:text-ink-red group-hover:opacity-100">
+            <Trash2 class="h-4 w-4" />
           </button>
         </div>
-        <p class="text-xs text-gray-600 font-mono">logged in within 30 days AND spent > $10</p>
+        <p class="font-mono text-xs text-ink-gray-6">logged in within 30 days AND spent &gt; $10</p>
       </div>
-      
     </div>
   </div>
 </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { Upload, Loader2 } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 
 const { columns, rowCount, uploading, error, sessionUuid, upload } = useSession()
@@ -34,8 +35,10 @@ function handleFile(file: File) {
 <template>
   <div>
     <div
-      class="bg-white p-6 rounded-xl border-2 border-dashed transition-colors cursor-pointer flex flex-col items-center justify-center min-h-[160px]"
-      :class="dragActive ? 'border-indigo-400 bg-indigo-50' : 'border-indigo-200 hover:bg-indigo-50'"
+      class="flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-5 border-2 border-dashed bg-surface-base p-6 transition-colors"
+      :class="dragActive
+        ? 'border-primary-5 bg-primary-1'
+        : 'border-outline-gray-3 hover:border-primary-3 hover:bg-primary-1'"
       role="button"
       tabindex="0"
       @click="browse"
@@ -52,37 +55,38 @@ function handleFile(file: File) {
         @change="onFileChange"
       />
 
-      <div class="text-indigo-600 mb-2">
-        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+      <div class="mb-2 text-primary">
+        <Loader2 v-if="uploading" class="h-8 w-8 animate-spin" />
+        <Upload v-else class="h-8 w-8" />
       </div>
 
       <template v-if="uploading">
-        <h3 class="text-sm font-medium text-gray-900">Uploading{{ fileName ? ' ' + fileName : '' }}…</h3>
-        <p class="text-xs text-gray-500 mt-1">Ingesting and profiling your data</p>
+        <h3 class="text-sm font-medium text-ink-gray-9">Uploading{{ fileName ? ' ' + fileName : '' }}…</h3>
+        <p class="mt-1 text-xs text-ink-gray-5">Ingesting and profiling your data</p>
       </template>
       <template v-else-if="sessionUuid">
-        <h3 class="text-sm font-medium text-gray-900">{{ fileName ?? 'Data loaded' }}</h3>
-        <p class="text-xs text-gray-500 mt-1">
+        <h3 class="text-sm font-medium text-ink-gray-9">{{ fileName ?? 'Data loaded' }}</h3>
+        <p class="mt-1 text-xs text-ink-gray-5">
           {{ rowCount.toLocaleString() }} rows · {{ columns.length }} columns — click to replace
         </p>
       </template>
       <template v-else>
-        <h3 class="text-sm font-medium text-gray-900">Upload CSV or Parquet</h3>
-        <p class="text-xs text-gray-500 mt-1">Drag and drop, or click to browse</p>
+        <h3 class="text-sm font-medium text-ink-gray-9">Upload CSV or Parquet</h3>
+        <p class="mt-1 text-xs text-ink-gray-5">Drag and drop, or click to browse</p>
       </template>
     </div>
 
-    <p v-if="error" class="mt-2 text-xs text-red-600">{{ error }}</p>
+    <p v-if="error" class="mt-2 text-xs text-ink-red">{{ error }}</p>
 
     <!-- Schema pills rendered from the POST /sessions response -->
     <div v-if="sessionUuid && columns.length" class="mt-3 flex flex-wrap gap-2">
       <span
         v-for="col in columns"
         :key="col.name"
-        class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-gray-100 text-xs"
+        class="inline-flex items-center gap-1.5 rounded-3 border border-outline-gray-1 bg-surface-gray-2 px-2 py-1 text-xs"
       >
-        <span class="font-medium text-gray-800">{{ col.name }}</span>
-        <span class="text-gray-400 uppercase tracking-wide">{{ col.type }}</span>
+        <span class="font-medium text-ink-gray-8">{{ col.name }}</span>
+        <span class="uppercase tracking-wide text-ink-gray-4">{{ col.type }}</span>
       </span>
     </div>
   </div>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import { Loader2 } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import { fetchData, apiErrorMessage } from '../services/api'
 import type { DataColumn } from '../types'
@@ -99,13 +100,15 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
 </script>
 
 <template>
-  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col">
-    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
-      <h3 class="text-sm font-semibold text-gray-700">Data Grid</h3>
-      <span class="text-xs text-gray-500">
+  <div class="flex flex-col overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm">
+    <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-4 py-3">
+      <h3 class="text-sm font-semibold text-ink-gray-8">Data Grid</h3>
+      <span class="text-xs text-ink-gray-5">
         <template v-if="sessionUuid">
           {{ rows.length.toLocaleString() }} / {{ total.toLocaleString() }} rows
-          <span v-if="loading" class="text-indigo-500">· loading…</span>
+          <span v-if="loading" class="inline-flex items-center gap-1 text-primary">
+            <Loader2 class="h-3 w-3 animate-spin" /> loading…
+          </span>
         </template>
         <template v-else>0 rows</template>
       </span>
@@ -116,30 +119,30 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
     <div ref="scrollEl" class="overflow-auto relative" style="height: 440px">
       <div
         v-if="gridError"
-        class="absolute inset-0 flex items-center justify-center text-red-600 text-sm px-4 text-center"
+        class="absolute inset-0 flex items-center justify-center px-4 text-center text-sm text-ink-red"
       >
         {{ gridError }}
       </div>
       <div
         v-else-if="!sessionUuid"
-        class="absolute inset-0 flex items-center justify-center text-gray-400 text-sm"
+        class="absolute inset-0 flex items-center justify-center text-sm text-ink-gray-4"
       >
         Upload data to view grid
       </div>
       <div
         v-else-if="loading && rows.length === 0"
-        class="absolute inset-0 flex items-center justify-center text-gray-400 text-sm"
+        class="absolute inset-0 flex items-center justify-center gap-2 text-sm text-ink-gray-4"
       >
-        Loading…
+        <Loader2 class="h-4 w-4 animate-spin" /> Loading…
       </div>
 
       <div v-else :style="{ width: gridWidth + 'px', minWidth: '100%' }">
         <!-- Sticky header row (pins vertically; scrolls horizontally with body) -->
-        <div class="flex sticky top-0 z-10 bg-gray-50 border-b border-gray-200">
+        <div class="flex sticky top-0 z-10 border-b border-outline-gray-1 bg-surface-gray-1">
           <div
             v-for="col in columns"
             :key="col.name"
-            class="shrink-0 px-3 py-2 text-xs font-semibold text-gray-700 truncate"
+            class="shrink-0 truncate px-3 py-2 text-xs font-semibold text-ink-gray-7"
             :style="{ width: COL_W + 'px' }"
             :title="col.name + ' · ' + col.type"
           >
@@ -152,13 +155,13 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
           <div
             v-for="vRow in virtualRows"
             :key="vRow.index"
-            class="absolute top-0 left-0 flex border-b border-gray-100 hover:bg-gray-50"
+            class="absolute top-0 left-0 flex border-b border-outline-gray-1 hover:bg-surface-gray-1"
             :style="{ height: vRow.size + 'px', transform: `translateY(${vRow.start}px)` }"
           >
             <div
               v-for="col in columns"
               :key="col.name"
-              class="shrink-0 px-3 py-2 text-xs text-gray-800 truncate"
+              class="shrink-0 truncate px-3 py-2 text-xs text-ink-gray-8"
               :style="{ width: COL_W + 'px' }"
               :title="cell(rows[vRow.index], col.name)"
             >
