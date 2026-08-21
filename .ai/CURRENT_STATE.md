@@ -14,6 +14,8 @@ python test_concurrent.py                  # 2/2  concurrency (TASK-002)
 python test_multitable.py                  # 4/4  multi-table + injection (TASK-003)
 python test_sql_validator.py               # 25/25 adversarial SQL validation (ADR-013)
 python test_ingestion.py                   # single-table ingestion
+python test_transform.py                   # 5 cleaning ops + snapshot undo/redo (TASK-004)
+python test_transform_v2.py                # +5 ops, predicate filter, function allowlist, dry-run preview (TASK-005)
 ```
 `test_multitable.py` prints `REDIS BACKEND IN USE: redis` when real Redis served the run, or `fakeredis` when it fell back. **If it says `fakeredis`, the Redis proof is void** (AP-9).
 
@@ -23,18 +25,17 @@ python test_ingestion.py                   # single-table ingestion
   - Single-table, real DuckDB inference on the adversarial CSV (100 rows, 45+ cols): `ambiguous_date` → **DATE**, `mixed_col` → **VARCHAR** (card. 84), `mostly_null` → **VARCHAR** (card. 1), `category` → **VARCHAR** (card. 3, samples `["Blue","Red","Green"]`).
   - **Multi-table coexistence VERIFIED** (the long-standing blocker): `..._messy` + `..._regions` in one session, distinct names, row counts after 2nd upload `primary=100, second=6` — primary untouched, both queryable. Same-filename re-upload returns **409** instead of silently clobbering.
   - **Real-Redis proof CAPTURED** — `redis-cli GET schema:{uuid}` from an independent process returned the app-written value, a 2-table dict (2729 bytes), incl. correct BOOLEAN round-trip (`active: [false, true]`). RDB durability confirmed (`rdb_last_bgsave_status:ok`, `dump.rdb` written).
+- **Data cleaning + transforms (Phase 3 — TASK-004 + TASK-005) — VERIFIED.** 10 transform ops built **Ibis compile-only** (unbound table → DuckDB SQL text, executed on `run_readwrite`; Ibis opens no connection — ADR-007): dedupe, drop_null, impute_null (zero/mean/median/**mode**/custom), cast, calculated_column, drop_column, rename_column, dedupe_subset, string_normalize, filter_rows. Per-table snapshot undo/redo/history capped at 10 (ADR-004). `calculated_column` **and** `filter_rows` share ONE fail-closed sqlglot validator with an explicit scalar-function **allowlist** — the function-allowlist residual noted in ADR-014 is CLOSED (ADR-015). Dry-run **preview** reports the row-count delta + a sample via read-only SELECTs, with no materialize/snapshot/history/version bump. Proofs: `test_transform.py` (TASK-004) and `test_transform_v2.py` (TASK-005), both green **twice** against real Redis; injection sentinel survives the predicate path; non-whitelisted funcs (`nextval`/`read_csv_auto`/`pg_sleep`) rejected in both formula and predicate.
 - **SQL validator (ADR-013)** — fail-closed, 25/25 adversarial cases. This is Phase 6 defense layer 1 only; the rest of Phase 6 is unbuilt.
 - **Repo is now under git** — initial commit `26639d3`, 68 files tracked, `.gitignore` verified excluding `spencer.db`, `uploads/`, `node_modules/`, `tools/`. `.env.example` added; `.env` gitignored.
 - **CORS** — explicit env-driven origin allowlist (`SPENCER_CORS_ORIGINS`), default `localhost:5173`. App version bumped to `1.2.0` to match the contract.
 
 ## Not Started
-- Cleaning/undo-redo implementation (endpoints stubbed only) — Phase 3
 - Pagination / TanStack wiring — Phase 4
 - Visual canvas / charting — Phase 5
 - AI layer: prompt assembly, `ai_service.generate_sql()` (still `pass`), 3-retry loop, Review Gate UI, Redis query caching — Phase 6 (validator done, nothing else)
 - Scheduling / APScheduler wiring — Phase 7
 - Frontend networking (Axios/Fetch) — no live calls wired yet
-- Ibis is **not yet a dependency** and is not used anywhere; adopting it (ADR-007) is part of Phase 3
 
 ## Resolved This Session (2026-08-21)
 | Sev | Issue | Resolution |
@@ -64,5 +65,5 @@ python test_ingestion.py                   # single-table ingestion
 - Portable Redis is **5.0.14.1**; production Redis 6/7 supports RESP3. `protocol=2` is pinned for compatibility — revisit if the server is upgraded.
 
 ## Next Recommended Task
-**TASK-004 — Data Cleaning ("Drop & Scrub")** per Phase 3: dedupe, missing-value handling (zero/mean/median/custom), type change, calculated columns, per-table undo/redo (ADR-004 snapshots, capped 5–10), all built via **Ibis** (ADR-007 — adding the dependency is part of this task).
+**Phase 4 — Virtualized data grid + pagination + first real frontend↔backend wiring.** Backend: a paginated read endpoint (offset/limit or keyset) over a session's live table. Frontend: a TanStack Table virtualized grid wired to that endpoint via Axios — the first live network call (the frontend is a component shell today). Closes the "no live calls wired yet" gap.
 Pre-req reminder: start real Redis first, and require `REDIS BACKEND IN USE: redis` in any proof that touches the cache.

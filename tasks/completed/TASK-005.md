@@ -90,4 +90,26 @@ validator with the function allowlist closed; self-review with severity grades
 attached. **Sign-off is the user's.**
 
 ## Status
-DRAFT — scope agreed at TASK-004 sign-off 2026-08-21; not yet started.
+COMPLETE — SIGNED OFF BY USER (2026-08-21).
+
+Proof: `backend/test_transform_v2.py` — all checks pass against real Redis
+(`redis` 5.0.14.1), idempotent (ran twice, identical), and TASK-004's proof
+(`backend/test_transform.py`) still passes (no regression). Design + honest
+semantic caveats recorded in ADR-015.
+
+Proof coverage was extended after a "does every feature actually work?" review:
+`string_normalize` case modes are now proven **mutually distinct** on multi-char
+input (upper `HELLO` vs lower `hello` vs capitalize `Hello` — single-char grades
+couldn't distinguish them), the full **trim→case→find/replace→null_token** chain
+is exercised in one call (compiling to `NULLIF(REPLACE(LOWER(TRIM(...))))`), a
+**multi-column** `dedupe_subset` (`[region, grade]` → `GROUP BY 1,2`, 5 rows kept)
+is verified, and the fail-closed **guard branches** (drop/dedupe unknown column,
+string_normalize with no op) are asserted to raise, not crash.
+
+Self-review (severity-graded) attached at sign-off review; no CRITICAL/MAJOR
+findings. Known MINOR deviations, all documented in ADR-015: `dedupe_subset`
+keeps first/last *non-null* per group (not a stable whole-row keep, DuckDB group
+order is unordered); `string_normalize` offers capitalize (first-char) not
+per-word title case; `filter_rows` follows SQL three-valued logic (NULL-predicate
+rows excluded by both keep and remove); the function allowlist is fail-closed
+(an unlisted-but-legitimate scalar function is rejected, not silently allowed).

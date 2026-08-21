@@ -14,7 +14,7 @@ Early build, developed in verifiable phases. Every "done" below is backed by com
 |------:|-------|-------|
 | 1 | DuckDB connection layer, concurrency model, Redis cache | ✅ Verified (sequential + concurrent) |
 | 2 | Multi-table ingestion, session & schema management | ✅ Verified (real DuckDB inference, real Redis round-trip) |
-| 3 | Visual data cleaning + per-table undo/redo (via Ibis) | ✅ Verified (5 ops, snapshot undo/redo, fail-closed formula validation) |
+| 3 | Visual data cleaning + per-table undo/redo (via Ibis) | ✅ Verified (10 ops incl. predicate filtering, dry-run preview, snapshot undo/redo, fail-closed formula/predicate validation + function allowlist) |
 | 4 | Virtualized data grid + pagination | ▫️ Not started |
 | 5 | Drag-and-drop charting canvas | ▫️ Not started |
 | 6 | Natural-language → SQL | ◐ Validator done & verified; LLM call, retry loop, and Review Gate UI unbuilt |

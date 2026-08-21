@@ -36,7 +36,9 @@ class TransformDropNull(BaseModel):
 class TransformImputeNull(BaseModel):
     op: Literal["impute_null"]
     column: str
-    strategy: Literal["zero", "mean", "median", "custom"]
+    # `mode` (TASK-005) is the most-frequent non-null value -- the only non-custom
+    # option that also works for a categorical/text column (mean/median are numeric).
+    strategy: Literal["zero", "mean", "median", "mode", "custom"]
     fill_value: Optional[Any] = None
 
 class TransformCast(BaseModel):
@@ -49,6 +51,38 @@ class TransformCalculatedColumn(BaseModel):
     new_column_name: str
     formula: str
 
+# --- TASK-005 ops -----------------------------------------------------------
+class TransformDropColumn(BaseModel):
+    op: Literal["drop_column"]
+    column: str
+
+class TransformRenameColumn(BaseModel):
+    op: Literal["rename_column"]
+    column: str
+    new_name: str
+
+class TransformDedupeSubset(BaseModel):
+    op: Literal["dedupe_subset"]
+    columns: List[str]
+    keep: Literal["first", "last"] = "first"
+
+class TransformStringNormalize(BaseModel):
+    op: Literal["string_normalize"]
+    column: str
+    trim: bool = False
+    case: Optional[Literal["upper", "lower", "capitalize"]] = None
+    find: Optional[str] = None
+    replace: Optional[str] = None
+    null_token: Optional[str] = None
+
+class TransformFilterRows(BaseModel):
+    op: Literal["filter_rows"]
+    # A user-authored boolean predicate (e.g. "revenue > 0"). Runs on the
+    # non-sandboxed path, so it is validated by the SAME fail-closed scalar
+    # validator as calculated_column (see transform_service._validate_formula).
+    predicate: str
+    action: Literal["keep", "remove"] = "keep"
+
 # Discriminated on `op` so FastAPI/Pydantic route each payload to exactly one
 # model (e.g. drop_null vs impute_null, which share a `column` field).
 TransformParam = Annotated[
@@ -58,6 +92,11 @@ TransformParam = Annotated[
         TransformImputeNull,
         TransformCast,
         TransformCalculatedColumn,
+        TransformDropColumn,
+        TransformRenameColumn,
+        TransformDedupeSubset,
+        TransformStringNormalize,
+        TransformFilterRows,
     ],
     Field(discriminator="op"),
 ]
@@ -66,6 +105,21 @@ class TransformResponse(BaseModel):
     schema_version: int
     step: int
     row_count: int
+
+class PreviewColumn(BaseModel):
+    name: str
+    type: str
+
+class TransformPreviewResponse(BaseModel):
+    """Dry-run result (TASK-005): what a transform *would* do, computed by running
+    only SELECTs -- no materialize, no snapshot, no history step, no version bump."""
+    op: str
+    row_count_before: int
+    row_count_after: int
+    row_count_delta: int
+    columns: List[PreviewColumn]
+    sample: List[Dict[str, Any]]
+    compiled_sql: str
 
 class HistoryStep(BaseModel):
     step: int

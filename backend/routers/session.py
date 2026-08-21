@@ -11,6 +11,7 @@ from models.schemas import (
     TableSchemaResponse,
     TransformParam,
     TransformResponse,
+    TransformPreviewResponse,
     HistoryResponse,
     ColumnSchema
 )
@@ -210,6 +211,18 @@ async def apply_transform(session_uuid: str, payload: TransformParam, table_name
     is_primary = schema.get(tname, {}).get("is_primary", False)
     await refresh_table_schema_cache(session_uuid, tname, is_primary)
     return TransformResponse(schema_version=version, step=step, row_count=row_count)
+
+@router.post("/{session_uuid}/transform/preview", response_model=TransformPreviewResponse)
+async def preview_transform(session_uuid: str, payload: TransformParam, table_name: Optional[str] = None):
+    """Dry-run: report what the op WOULD do (row-count delta, resulting schema, a
+    sample) without applying it -- no history step, no schema_version bump. Same
+    fail-closed validation as the real transform."""
+    tname = _resolve_table(session_uuid, table_name)
+    try:
+        result = await transform_service.preview_transform(session_uuid, tname, payload)
+    except transform_service.TransformError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return TransformPreviewResponse(**result)
 
 @router.post("/{session_uuid}/undo", response_model=TransformResponse)
 async def undo_transform(session_uuid: str, table_name: Optional[str] = None):
