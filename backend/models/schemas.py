@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Literal, Union
+from typing import List, Dict, Any, Optional, Literal, Union, Annotated
 from pydantic import BaseModel, Field
 
 class ColumnSchema(BaseModel):
@@ -49,12 +49,17 @@ class TransformCalculatedColumn(BaseModel):
     new_column_name: str
     formula: str
 
-TransformParam = Union[
-    TransformDedupe,
-    TransformDropNull,
-    TransformImputeNull,
-    TransformCast,
-    TransformCalculatedColumn
+# Discriminated on `op` so FastAPI/Pydantic route each payload to exactly one
+# model (e.g. drop_null vs impute_null, which share a `column` field).
+TransformParam = Annotated[
+    Union[
+        TransformDedupe,
+        TransformDropNull,
+        TransformImputeNull,
+        TransformCast,
+        TransformCalculatedColumn,
+    ],
+    Field(discriminator="op"),
 ]
 
 class TransformResponse(BaseModel):

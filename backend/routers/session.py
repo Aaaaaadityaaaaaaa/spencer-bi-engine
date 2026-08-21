@@ -2,6 +2,7 @@ import uuid
 import os
 import shutil
 import re
+from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from models.schemas import (
     SessionResponse,
@@ -15,6 +16,7 @@ from models.schemas import (
 )
 from services.duckdb_manager import db_manager
 from services.redis_manager import redis_manager
+from services import transform_service
 
 router = APIRouter()
 
@@ -49,17 +51,13 @@ def _quote_ident(name: str) -> str:
     come from CSV headers, which are not trusted)."""
     return '"' + name.replace('"', '""') + '"'
 
-async def analyze_and_register_table(session_uuid: str, table_name: str, file_path: str, is_primary: bool):
-    # Load into duckdb. The file path is BOUND as a parameter (never interpolated)
-    # so a crafted filename cannot break out of the read_csv_auto string literal.
-    # table_name is a \\W-sanitized identifier, safe to interpolate.
-    await db_manager.run_readwrite(
-        f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto(?, header=true)",
-        (file_path,),
-    )
+async def refresh_table_schema_cache(session_uuid: str, table_name: str, is_primary: bool):
+    """Compute cardinality/samples/DDL for `table_name` and (re)write the
+    `schema:{session}` cache entry; return the ColumnSchema list.
 
-    row_count = (await db_manager.run_readwrite(f"SELECT COUNT(*) FROM {table_name}"))[0][0]
-
+    Shared by ingestion and by post-transform refresh: after any transform the
+    schema is recomputed from the live table rather than trusted from cache
+    (ARCHITECTURE.md — schema is never statically cached across a transform)."""
     col_info = await db_manager.run_readwrite(f"PRAGMA table_info({table_name})")
     columns = []
 
@@ -98,7 +96,39 @@ async def analyze_and_register_table(session_uuid: str, table_name: str, file_pa
     schema_data[table_name] = table_schema_context
     redis_manager.set_json(schema_key, schema_data)
 
+    return columns
+
+
+async def analyze_and_register_table(session_uuid: str, table_name: str, file_path: str, is_primary: bool):
+    # Load into duckdb. The file path is BOUND as a parameter (never interpolated)
+    # so a crafted filename cannot break out of the read_csv_auto string literal.
+    # table_name is a \\W-sanitized identifier, safe to interpolate.
+    await db_manager.run_readwrite(
+        f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto(?, header=true)",
+        (file_path,),
+    )
+
+    row_count = (await db_manager.run_readwrite(f"SELECT COUNT(*) FROM {table_name}"))[0][0]
+    columns = await refresh_table_schema_cache(session_uuid, table_name, is_primary)
+
     return row_count, columns
+
+
+def _resolve_table(session_uuid: str, table_name: Optional[str]) -> str:
+    """Resolve which table an op targets: the named one if it exists in this
+    session, otherwise the session's primary table. 404 if the session has no
+    tables or the named table is unknown."""
+    schema = redis_manager.get_json(f"schema:{session_uuid}") or {}
+    if not schema:
+        raise HTTPException(status_code=404, detail="No tables in this session")
+    if table_name:
+        if table_name in schema:
+            return table_name
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found in session")
+    for tname, ctx in schema.items():
+        if ctx.get("is_primary"):
+            return tname
+    return next(iter(schema))
 
 @router.post("", response_model=SessionResponse)
 async def create_session(file: UploadFile = File(...)):
@@ -168,27 +198,44 @@ async def delete_session(session_uuid: str):
     return {"status": "deleted"}
 
 @router.post("/{session_uuid}/transform", response_model=TransformResponse)
-async def apply_transform(session_uuid: str, payload: TransformParam):
-    # Apply one transform op
-    return TransformResponse(schema_version=1, step=1, row_count=0)
+async def apply_transform(session_uuid: str, payload: TransformParam, table_name: Optional[str] = None):
+    tname = _resolve_table(session_uuid, table_name)
+    try:
+        version, step, row_count = await transform_service.apply_transform(session_uuid, tname, payload)
+    except transform_service.TransformError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # Recompute the schema cache from the transformed table (types/cardinality
+    # may have changed). Preserve the table's primary flag.
+    schema = redis_manager.get_json(f"schema:{session_uuid}") or {}
+    is_primary = schema.get(tname, {}).get("is_primary", False)
+    await refresh_table_schema_cache(session_uuid, tname, is_primary)
+    return TransformResponse(schema_version=version, step=step, row_count=row_count)
 
 @router.post("/{session_uuid}/undo", response_model=TransformResponse)
-async def undo_transform(session_uuid: str):
-    # Revert to previous snapshot
-    return TransformResponse(schema_version=1, step=0, row_count=0)
+async def undo_transform(session_uuid: str, table_name: Optional[str] = None):
+    tname = _resolve_table(session_uuid, table_name)
+    try:
+        version, step, row_count = await transform_service.undo(session_uuid, tname)
+    except transform_service.TransformError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    schema = redis_manager.get_json(f"schema:{session_uuid}") or {}
+    is_primary = schema.get(tname, {}).get("is_primary", False)
+    await refresh_table_schema_cache(session_uuid, tname, is_primary)
+    return TransformResponse(schema_version=version, step=step, row_count=row_count)
 
 @router.post("/{session_uuid}/redo", response_model=TransformResponse)
-async def redo_transform(session_uuid: str):
-    # Reapply a reverted snapshot
-    return TransformResponse(schema_version=1, step=1, row_count=0)
+async def redo_transform(session_uuid: str, table_name: Optional[str] = None):
+    tname = _resolve_table(session_uuid, table_name)
+    try:
+        version, step, row_count = await transform_service.redo(session_uuid, tname)
+    except transform_service.TransformError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    schema = redis_manager.get_json(f"schema:{session_uuid}") or {}
+    is_primary = schema.get(tname, {}).get("is_primary", False)
+    await refresh_table_schema_cache(session_uuid, tname, is_primary)
+    return TransformResponse(schema_version=version, step=step, row_count=row_count)
 
 @router.get("/{session_uuid}/history", response_model=HistoryResponse)
-async def get_history(session_uuid: str):
-    # List transform step history + undo/redo state
-    return HistoryResponse(
-        steps=[],
-        current_step_index=0,
-        total_steps=0,
-        can_undo=False,
-        can_redo=False
-    )
+async def get_history(session_uuid: str, table_name: Optional[str] = None):
+    tname = _resolve_table(session_uuid, table_name)
+    return HistoryResponse(**transform_service.get_history(session_uuid, tname))

@@ -73,6 +73,16 @@ class RedisManager:
             return json.loads(val)
         return None
 
+    def incr_version(self, session_uuid: str) -> int:
+        """Atomically bump and return the schema version for a session. Called
+        after every transform/undo/redo so any query result cached against an
+        older version is treated as stale (ARCHITECTURE.md)."""
+        return int(self.client.incr(f"schema_version:{session_uuid}"))
+
+    def get_version(self, session_uuid: str) -> int:
+        val = self.client.get(f"schema_version:{session_uuid}")
+        return int(val) if val else 0
+
     def get_query_cache(self, question_hash: str, schema_version: int, bizdict_version: int):
         pass
 

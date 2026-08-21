@@ -8,6 +8,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "duckdb",
+    "ibis-framework[duckdb]",
     "redis",
     "sqlglot",
     "apscheduler",
