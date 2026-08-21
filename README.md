@@ -15,12 +15,12 @@ Early build, developed in verifiable phases. Every "done" below is backed by com
 | 1 | DuckDB connection layer, concurrency model, Redis cache | ✅ Verified (sequential + concurrent) |
 | 2 | Multi-table ingestion, session & schema management | ✅ Verified (real DuckDB inference, real Redis round-trip) |
 | 3 | Visual data cleaning + per-table undo/redo (via Ibis) | ✅ Verified (10 ops incl. predicate filtering, dry-run preview, snapshot undo/redo, fail-closed formula/predicate validation + function allowlist) |
-| 4 | Virtualized data grid + pagination | ▫️ Not started |
+| 4 | Virtualized data grid + pagination | ✅ Verified (paginated `/data`, virtualized infinite-scroll grid, first live Axios wiring) |
 | 5 | Drag-and-drop charting canvas | ▫️ Not started |
 | 6 | Natural-language → SQL | ◐ Validator done & verified; LLM call, retry loop, and Review Gate UI unbuilt |
 | 7 | Scheduled recurring queries (APScheduler) | ▫️ Not started |
 
-The backend core (connection safety, ingestion, the cleaning/transform pipeline, the SQL security layers) is built and tested. The frontend is a component shell — no live network calls are wired yet.
+The backend core (connection safety, ingestion, the cleaning/transform pipeline, the SQL security layers) is built and tested. The frontend's upload → schema → virtualized-grid path is now wired to the backend over Axios (Phase 4); the charting canvas and the AI query palette remain a component shell.
 
 ---
 
@@ -48,7 +48,7 @@ User-driven queries (cleaning, charting) travel a **separate** read-write path t
 
 ```
 Vue 3 + TS frontend          upload · schema pills · virtualized grid ·
-(shell, unwired)             ECharts canvas · Ctrl-K AI palette · Review Gate
+(grid path wired)            ECharts canvas · Ctrl-K AI palette · Review Gate
 
 FastAPI backend              single Uvicorn worker; every DuckDB call routed
 (--workers 1)                through a ThreadPoolExecutor

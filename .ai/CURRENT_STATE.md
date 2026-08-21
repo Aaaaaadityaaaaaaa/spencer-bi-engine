@@ -16,6 +16,7 @@ python test_sql_validator.py               # 25/25 adversarial SQL validation (A
 python test_ingestion.py                   # single-table ingestion
 python test_transform.py                   # 5 cleaning ops + snapshot undo/redo (TASK-004)
 python test_transform_v2.py                # +5 ops, predicate filter, function allowlist, dry-run preview (TASK-005)
+python test_data_endpoint.py               # 22/22 paginated /data + virtualized-grid backend (TASK-006)
 ```
 `test_multitable.py` prints `REDIS BACKEND IN USE: redis` when real Redis served the run, or `fakeredis` when it fell back. **If it says `fakeredis`, the Redis proof is void** (AP-9).
 
@@ -26,16 +27,16 @@ python test_transform_v2.py                # +5 ops, predicate filter, function 
   - **Multi-table coexistence VERIFIED** (the long-standing blocker): `..._messy` + `..._regions` in one session, distinct names, row counts after 2nd upload `primary=100, second=6` — primary untouched, both queryable. Same-filename re-upload returns **409** instead of silently clobbering.
   - **Real-Redis proof CAPTURED** — `redis-cli GET schema:{uuid}` from an independent process returned the app-written value, a 2-table dict (2729 bytes), incl. correct BOOLEAN round-trip (`active: [false, true]`). RDB durability confirmed (`rdb_last_bgsave_status:ok`, `dump.rdb` written).
 - **Data cleaning + transforms (Phase 3 — TASK-004 + TASK-005) — VERIFIED.** 10 transform ops built **Ibis compile-only** (unbound table → DuckDB SQL text, executed on `run_readwrite`; Ibis opens no connection — ADR-007): dedupe, drop_null, impute_null (zero/mean/median/**mode**/custom), cast, calculated_column, drop_column, rename_column, dedupe_subset, string_normalize, filter_rows. Per-table snapshot undo/redo/history capped at 10 (ADR-004). `calculated_column` **and** `filter_rows` share ONE fail-closed sqlglot validator with an explicit scalar-function **allowlist** — the function-allowlist residual noted in ADR-014 is CLOSED (ADR-015). Dry-run **preview** reports the row-count delta + a sample via read-only SELECTs, with no materialize/snapshot/history/version bump. Proofs: `test_transform.py` (TASK-004) and `test_transform_v2.py` (TASK-005), both green **twice** against real Redis; injection sentinel survives the predicate path; non-whitelisted funcs (`nextval`/`read_csv_auto`/`pg_sleep`) rejected in both formula and predicate.
+- **Virtualized data grid + pagination + first live frontend↔backend wiring (Phase 4 — TASK-006) — VERIFIED.** `GET /sessions/{id}/data?offset&limit&table_name` returns `{columns:[{name,type}], rows, total, offset, limit}` over a session's live table on the **read-write path** (`run_readwrite`; `run_sandboxed` / `duckdb_manager.py` untouched). `ORDER BY rowid` gives stable, disjoint, complete infinite-scroll windows (safe on transformed tables too — transforms materialize base tables via `CREATE TABLE … AS SELECT`, never views); `limit` clamped `[1,1000]`, `offset` `[0,…]`, ints only; `table_name` resolved via `_resolve_table` (unknown → 404) and `_quote_ident`-quoted — no user string reaches SQL (AP-8). Frontend now makes **real Axios calls**: `UploadDropzone` → `POST /sessions` → schema pills; `DataGrid` (`@tanstack/vue-virtual`) fetches 500-row windows and appends on scroll with a `rows.length >= total` stop guard. Proof `test_data_endpoint.py` — 22 checks green **twice** (idempotent AP-7) against real Redis (AP-9); live browser proof of the full path (`offset=0/500/1000`, NULL→blank, DATE→ISO, 23 DOM rows for 1,200 = virtualization); strict `vue-tsc` build clean.
 - **SQL validator (ADR-013)** — fail-closed, 25/25 adversarial cases. This is Phase 6 defense layer 1 only; the rest of Phase 6 is unbuilt.
 - **Repo is now under git** — initial commit `26639d3`, 68 files tracked, `.gitignore` verified excluding `spencer.db`, `uploads/`, `node_modules/`, `tools/`. `.env.example` added; `.env` gitignored.
 - **CORS** — explicit env-driven origin allowlist (`SPENCER_CORS_ORIGINS`), default `localhost:5173`. App version bumped to `1.2.0` to match the contract.
 
 ## Not Started
-- Pagination / TanStack wiring — Phase 4
 - Visual canvas / charting — Phase 5
 - AI layer: prompt assembly, `ai_service.generate_sql()` (still `pass`), 3-retry loop, Review Gate UI, Redis query caching — Phase 6 (validator done, nothing else)
 - Scheduling / APScheduler wiring — Phase 7
-- Frontend networking (Axios/Fetch) — no live calls wired yet
+- Frontend networking for charting (Phase 5) + AI palette / Review Gate (Phase 6) — not wired (the upload → schema → grid path IS wired as of Phase 4 — TASK-006)
 
 ## Resolved This Session (2026-08-21)
 | Sev | Issue | Resolution |
@@ -65,5 +66,12 @@ python test_transform_v2.py                # +5 ops, predicate filter, function 
 - Portable Redis is **5.0.14.1**; production Redis 6/7 supports RESP3. `protocol=2` is pinned for compatibility — revisit if the server is upgraded.
 
 ## Next Recommended Task
-**Phase 4 — Virtualized data grid + pagination + first real frontend↔backend wiring.** Backend: a paginated read endpoint (offset/limit or keyset) over a session's live table. Frontend: a TanStack Table virtualized grid wired to that endpoint via Axios — the first live network call (the frontend is a component shell today). Closes the "no live calls wired yet" gap.
+**TASK-007 — Data Grid v2** (the deferred half of the grid, mirroring the TASK-004→005 split):
+server-side column sorting on `/data` — `sort_by` validated against the table's known columns
+(unknown → rejected, fail-closed) + a `sort_dir` `asc`/`desc` allowlist, query `ORDER BY {qcol}
+{dir}, rowid` (the `rowid` tiebreaker keeps infinite-scroll windows stable under a sort) — plus
+type-aware cell formatting / NULL styling (pure frontend, driven by each `/data` column's `type`).
+Reuses `_resolve_table` / `_quote_ident`; `duckdb_manager.py` unchanged. May drop the unused
+`@tanstack/vue-table@9` devDep (TASK-006 self-review finding 3). Then **Phase 5 — drag-and-drop
+charting canvas** (ECharts), the next unbuilt phase.
 Pre-req reminder: start real Redis first, and require `REDIS BACKEND IN USE: redis` in any proof that touches the cache.

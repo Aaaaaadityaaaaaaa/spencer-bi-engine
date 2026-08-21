@@ -134,6 +134,18 @@ class HistoryResponse(BaseModel):
     can_undo: bool
     can_redo: bool
 
+# --- Data grid (Phase 4 / TASK-006) -----------------------------------------
+class DataResponse(BaseModel):
+    """A windowed read of a session table for the virtualized grid. JSON (not
+    MessagePack): a grid read stays debuggable; MessagePack remains the house
+    style for large analytical results (/execute, /chart). `columns` reuses
+    PreviewColumn {name,type}; `rows` mirrors TransformPreviewResponse.sample."""
+    columns: List[PreviewColumn]
+    rows: List[Dict[str, Any]]
+    total: int
+    offset: int
+    limit: int
+
 class ChartRequest(BaseModel):
     x_axis: str
     y_axis: str
