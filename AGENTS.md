@@ -13,6 +13,8 @@ Before making changes:
 8. Read the active task in `tasks/active/`
 9. Inspect the relevant existing source code
 
+Local assistant tooling (optional; Claude Code MCP servers + editor plugins) is documented in `TOOLING.md`. It is developer setup only — not required to build or run the project, and not part of the task workflow above.
+
 Do not make architectural changes without explicitly reporting them as:
 ```
 ARCHITECTURAL_CHANGE_REQUEST
