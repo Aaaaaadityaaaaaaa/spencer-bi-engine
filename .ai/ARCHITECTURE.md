@@ -35,10 +35,17 @@ Scheduling
 APScheduler, in-process (fits single-worker constraint)
 Job store must be persistent (Redis-backed), not the default in-memory store — in-memory jobs are lost on any restart, which directly breaks the product's stated automation goal
 Scheduled runs use a pinned snapshot of schema/bizdict/joins taken at schedule-creation time, decoupled from live session TTL
+Storage Lifecycle & Deployment Hardening (TASK-013 — single-VM, disposable data)
+Session lifetime is defined by a session:{session_uuid} Redis liveness marker with a sliding TTL (SPENCER_SESSION_TTL_HOURS, default 24h) — set on create/upload, slid on any /sessions/{uuid}/... request (including read-only queries). A session is "dead" once this marker expires.
+A periodic cleanup sweep (services/cleanup_service.sweep, every SPENCER_SWEEP_INTERVAL_MIN, plus once at startup and on-demand via POST /admin/sweep) reclaims each dead session's DuckDB tables + uploads/{uuid}/ dir + Redis keys. Idempotent; a SPENCER_SWEEP_GRACE_MIN window protects in-flight uploads. Runs on a bare asyncio task, independent of the (unbuilt) APScheduler job store.
+Sweep SQL safety (AP-8/ADR-012): the filesystem-derived uuid is never interpolated into SQL. The catalog is snapshotted, table names are prefix-filtered in Python, and only catalog-sourced quote-escaped identifiers are dropped — all via run_readwrite (frozen duckdb_manager untouched).
+Upload guardrails: SPENCER_MAX_UPLOAD_MB enforced in three layers (nginx client_max_body_size in front = the real pre-server gate; a Content-Length middleware early-reject → 413; a streaming byte-count backstop that removes the partial file → 413). SPENCER_UPLOAD_ALLOWED_EXT extension allowlist → 415 before any bytes persist. The deploy-guard middleware is registered before CORS so CORS stays outermost and early 413s still carry Access-Control-Allow-Origin.
+DuckDB runtime hardening: PRAGMA memory_limit (SPENCER_DUCKDB_MEMORY_LIMIT, default 4GB, operator value regex-validated) + optional temp_directory applied at startup via run_readwrite.
+GET /admin/storage exposes disk/uploads/db bytes, table count, live sessions, orphan dirs, and the live memory_limit.
 Known Open Risks (see CURRENT_STATE.md for status)
 Dual-connection (rw + ro) simultaneous access to one DuckDB file: implemented, not yet empirically verified
-No session/data cleanup mechanism defined (uploads, tables, Redis keys accumulate indefinitely)
+Session/data cleanup: IMPLEMENTED (TASK-013) — sliding-TTL marker + periodic sweep reclaims dead sessions' upload dirs + tables + Redis keys. Boundary: the sweep is dir-indexed, so orphan tables with no uploads/ dir (dev/test artifacts only; production tables always have a dir) are not reclaimed — Low-severity follow-up in CURRENT_STATE.md.
 No LLM API cost/rate control
-No file upload size/type validation
+File upload size/type validation: IMPLEMENTED (TASK-013) — 3-layer size cap (nginx / Content-Length 413 / streaming backstop 413) + extension allowlist (415). Reminder: nginx client_max_body_size is a required deploy step, not code.
 No row cap on ad-hoc /execute results
 Secrets management (.env/.gitignore) not yet confirmed in place

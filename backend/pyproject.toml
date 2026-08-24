@@ -15,6 +15,21 @@ dependencies = [
     "pydantic",
     "python-multipart",
     "msgpack",
+    # LiteLLM is the single NL->SQL gateway (Phase 6): one call path routes to
+    # Claude or Gemini by whichever API key is present in the env. ai_service
+    # imports it defensively, so the rest of the API still runs if it is absent.
+    "litellm",
+    # Loads backend/.env at startup (main.py) so a locally-placed API key is honored
+    # by the documented `uvicorn main:app` launch without an explicit --env-file.
+    # Real deployments still win: load_dotenv(override=False) never clobbers a real
+    # env var. Already pulled in transitively by litellm; declared here because
+    # main.py imports it directly (same rule the fakeredis note above records).
+    "python-dotenv",
+    # openpyxl reads/writes .xlsx for ingestion (Foundation 3) and export
+    # (Foundation 4), Wave 2 / TASK-020. Chosen over DuckDB's `excel` extension:
+    # that extension needs a runtime network INSTALL and ships per-platform, which
+    # breaks offline / cross-OS deploys. openpyxl is pure-Python and vendored.
+    "openpyxl",
 ]
 
 [project.optional-dependencies]

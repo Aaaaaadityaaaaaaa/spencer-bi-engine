@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onActivated, nextTick } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { Loader2 } from '@lucide/vue'
+import {
+  Loader2, MoreVertical, Download, Eye, BarChart3, ChevronDown,
+  ArrowUp, ArrowDown, Pin, Search, X, RotateCcw,
+} from '@lucide/vue'
 import { useSession } from '../composables/useSession'
-import { fetchData, apiErrorMessage } from '../services/api'
-import type { DataColumn } from '../types'
+import { fetchData, exportTable, apiErrorMessage, blobErrorMessage } from '../services/api'
+import type { ExportFormat } from '../services/api'
+import { downloadBlob, exportFilename } from '../utils/csvExport'
+import type { DataColumn, OpKind, OpRequest, SortSpec } from '../types'
 
 // Window size for one fetch: matches the backend's default `limit` and is the
 // infinite-scroll page size (the backend clamps anything above 1000).
@@ -12,7 +17,57 @@ const PAGE = 500
 const ROW_H = 36   // px; fixed row height -> no per-row measurement needed
 const COL_W = 160  // px; fixed column width -> header/body columns stay aligned
 
-const { sessionUuid, tableName } = useSession()
+const { sessionUuid, tableName, fileName, dataVersion } = useSession()
+
+// Per-column ⋮ header menu -> asks the parent (TableView) to open the op dialog
+// pre-scoped to this column. The ribbon covers the same ops without a preset column.
+const emit = defineEmits<{
+  'column-op': [req: OpRequest]
+  'profile-column': [column: string]
+}>()
+
+const COLUMN_OPS: { op: OpKind; label: string }[] = [
+  { op: 'drop_null', label: 'Drop rows with nulls' },
+  { op: 'impute_null', label: 'Fill nulls…' },
+  { op: 'fill_down', label: 'Fill down / up…' },
+  { op: 'cast', label: 'Change type…' },
+  { op: 'rename_column', label: 'Rename…' },
+  { op: 'string_normalize', label: 'Normalize text…' },
+  { op: 'split_column', label: 'Split / extract…' },
+  { op: 'date_extract', label: 'Date parts…' },
+  { op: 'bin_column', label: 'Bin into ranges…' },
+  { op: 'flag_outliers', label: 'Flag outliers…' },
+  { op: 'drop_column', label: 'Drop column' },
+]
+
+// Which column's menu is open, and where to anchor it. The menu is position:fixed
+// (computed from the button rect) so the grid's overflow-auto can't clip it.
+const menuCol = ref<string | null>(null)
+const menuPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+
+function toggleMenu(col: string, e: MouseEvent): void {
+  if (menuCol.value === col) {
+    menuCol.value = null
+    return
+  }
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  menuPos.value = { x: r.right, y: r.bottom }
+  menuCol.value = col
+}
+
+function chooseOp(op: OpKind): void {
+  const col = menuCol.value
+  menuCol.value = null
+  if (col) emit('column-op', { op, column: col })
+}
+
+// Profiling is a read-only inspection, not a transform, so it emits its own event
+// (the parent opens the profile drawer) rather than routing through the op dialog.
+function chooseProfile(): void {
+  const col = menuCol.value
+  menuCol.value = null
+  if (col) emit('profile-column', col)
+}
 
 const rows = ref<Record<string, unknown>[]>([])
 const columns = ref<DataColumn[]>([])
@@ -21,20 +76,297 @@ const loading = ref(false)
 const gridError = ref<string | null>(null)
 const scrollEl = ref<HTMLDivElement | null>(null)
 
+// Generation token: every full reset (session switch, transform, sort/search
+// change) bumps this. A window fetch captures the token at launch and discards
+// its result if the token moved on, so a stale in-flight fetch can never write
+// another view's rows (e.g. old sort order) after a newer reload started.
+const reqGen = ref(0)
+
 const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>(
   computed(() => ({
     count: rows.value.length,
     getScrollElement: () => scrollEl.value,
     estimateSize: () => ROW_H,
-    overscan: 12,
+    // Overscan buffers rows above/below the viewport. It has to be generous here
+    // because the browser scrolls this container on the COMPOSITOR thread and
+    // delivers 'scroll' events to the main thread late/batched: during a fast fling
+    // the compositor shifts the already-painted layer before the virtualizer can
+    // re-render, so a small band gets outrun and the viewport paints blank until the
+    // main thread catches up. 24 rows (~860px) each side covers a hard fling without
+    // bloating the render -- each row is 5 short cells, so ~50-60 rendered rows stay
+    // cheap. (At-rest correctness is unaffected; this only widens the in-motion band.)
+    overscan: 24,
   })),
 )
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
 const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
-const gridWidth = computed(() => columns.value.length * COL_W)
+
+// <keep-alive> (App.vue) detaches this view's DOM on navigation and re-attaches it on
+// return. The virtualizer's ResizeObserver / scroll listener persist across that, so its
+// container rect stays valid -- but nothing fires the recompute that reactivation needs,
+// leaving the last (empty) visible range on screen until the user nudges the scrollbar.
+// Forcing a re-measure on reactivation runs that recompute so the rows paint immediately.
+onActivated(() => {
+  void nextTick(() => rowVirtualizer.value.measure())
+})
+
+// --- In-grid view controls (TASK-022) --------------------------------------
+// All four are view-only: they change what/how the grid renders (or which server
+// window it asks for), never the underlying table. Cleaning ops and export always
+// act on the FULL, unordered column set, so none of this can drop data or desync
+// a transform.
+
+// Column show/hide: the set of hidden column names.
+const hiddenCols = ref<Set<string>>(new Set())
+// Column order (all columns, incl. hidden, by name). Drag-reorder rewrites this;
+// hiding a column keeps its slot so unhiding restores its place.
+const colOrder = ref<string[]>([])
+// Frozen (pinned) columns render sticky-left, ahead of the scrolling columns.
+const pinnedCols = ref<Set<string>>(new Set())
+// Columns drawn with a value->colour heatmap (numeric only; needs `ranges`).
+const heatmapCols = ref<Set<string>>(new Set())
+// Whole-table [min,max] per numeric column, from the first window (offset 0).
+const ranges = ref<Record<string, [number, number]>>({})
+// Server-side multi-sort spec, in priority order. Sent to /data as "col:dir,...".
+const sortSpec = ref<SortSpec[]>([])
+// Raw search box text; debounced into `search` (the value actually sent as `q`).
+const searchInput = ref('')
+const search = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+// Columns in render order: pinned first (each sticky at a cumulative left offset),
+// then the rest, both following colOrder minus hidden.
+const orderedVisible = computed<DataColumn[]>(() => {
+  const byName = new Map(columns.value.map((c) => [c.name, c]))
+  const out: DataColumn[] = []
+  for (const n of colOrder.value) {
+    const c = byName.get(n)
+    if (c && !hiddenCols.value.has(n)) out.push(c)
+  }
+  return out
+})
+interface ColMeta { col: DataColumn; pinned: boolean; left: number }
+const displayCols = computed<ColMeta[]>(() => {
+  const pins: DataColumn[] = []
+  const rest: DataColumn[] = []
+  for (const c of orderedVisible.value) {
+    if (pinnedCols.value.has(c.name)) pins.push(c)
+    else rest.push(c)
+  }
+  const out: ColMeta[] = []
+  pins.forEach((col, i) => out.push({ col, pinned: true, left: i * COL_W }))
+  rest.forEach((col) => out.push({ col, pinned: false, left: 0 }))
+  return out
+})
+const gridWidth = computed(() => displayCols.value.length * COL_W)
+
+const colMenuOpen = ref(false)
+const colMenuPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+
+function toggleColMenu(e: MouseEvent): void {
+  if (colMenuOpen.value) {
+    colMenuOpen.value = false
+    return
+  }
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  colMenuPos.value = { x: r.right, y: r.bottom }
+  colMenuOpen.value = true
+}
+function toggleColVisible(name: string): void {
+  const next = new Set(hiddenCols.value)
+  if (next.has(name)) next.delete(name)
+  else next.add(name)
+  hiddenCols.value = next // reassign (not mutate) so the computed re-runs
+}
+function showAllCols(): void {
+  hiddenCols.value = new Set()
+}
+
+// --- sort: click a header to cycle asc -> desc -> off; shift-click for multi ---
+function sortInfo(name: string): { dir: 'asc' | 'desc'; idx: number } | null {
+  const i = sortSpec.value.findIndex((s) => s.column === name)
+  return i < 0 ? null : { dir: sortSpec.value[i].dir, idx: i + 1 }
+}
+function onHeaderClick(col: DataColumn, e: MouseEvent): void {
+  const name = col.name
+  const cur = sortSpec.value
+  const i = cur.findIndex((s) => s.column === name)
+  let next: SortSpec[]
+  if (e.shiftKey) {
+    // Additive: extend/advance/remove just this key, keeping the others' order.
+    next = [...cur]
+    if (i < 0) next.push({ column: name, dir: 'asc' })
+    else if (cur[i].dir === 'asc') next[i] = { column: name, dir: 'desc' }
+    else next.splice(i, 1)
+  } else {
+    // Single key: cycle this column, dropping any other sort.
+    if (i < 0) next = [{ column: name, dir: 'asc' }]
+    else if (cur[i].dir === 'asc') next = [{ column: name, dir: 'desc' }]
+    else next = []
+  }
+  sortSpec.value = next
+  reloadFromTop()
+}
+
+// --- drag to reorder columns (view-only; rewrites colOrder by name) ---------
+const dragCol = ref<string | null>(null)
+const dragOverCol = ref<string | null>(null)
+function onDragStart(name: string, e: DragEvent): void {
+  dragCol.value = name
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    try { e.dataTransfer.setData('text/plain', name) } catch { /* some browsers restrict */ }
+  }
+}
+function onDragOver(name: string): void {
+  if (dragCol.value && dragCol.value !== name) dragOverCol.value = name
+}
+function onDrop(target: string): void {
+  const src = dragCol.value
+  dragCol.value = null
+  dragOverCol.value = null
+  if (!src || src === target) return
+  const arr = [...colOrder.value]
+  const from = arr.indexOf(src)
+  const to = arr.indexOf(target)
+  if (from < 0 || to < 0) return
+  arr.splice(from, 1)
+  arr.splice(to, 0, src)
+  colOrder.value = arr
+}
+function onDragEnd(): void {
+  dragCol.value = null
+  dragOverCol.value = null
+}
+
+// --- pin / heatmap / hide, driven from the per-column ⋮ menu ----------------
+const canHeatmap = computed(() => !!(menuCol.value && ranges.value[menuCol.value]))
+const menuPinned = computed(() => !!(menuCol.value && pinnedCols.value.has(menuCol.value)))
+const menuHeat = computed(() => !!(menuCol.value && heatmapCols.value.has(menuCol.value)))
+
+function togglePin(): void {
+  const c = menuCol.value
+  menuCol.value = null
+  if (!c) return
+  const n = new Set(pinnedCols.value)
+  if (n.has(c)) n.delete(c)
+  else n.add(c)
+  pinnedCols.value = n
+}
+function toggleHeatmap(): void {
+  const c = menuCol.value
+  menuCol.value = null
+  if (!c) return
+  const n = new Set(heatmapCols.value)
+  if (n.has(c)) n.delete(c)
+  else n.add(c)
+  heatmapCols.value = n
+}
+function hideFromMenu(): void {
+  const c = menuCol.value
+  menuCol.value = null
+  if (!c) return
+  const n = new Set(hiddenCols.value)
+  n.add(c)
+  hiddenCols.value = n
+}
+
+// --- heatmap colour: opaque light->strong blue by the value's position in
+// [min,max]. Opaque (not alpha) so a pinned + heat cell never bleeds the
+// scrolling content behind it; text flips to white on the darker high end.
+function heatBg(t: number): string {
+  const c0 = [239, 246, 255] // blue-50
+  const c1 = [37, 99, 235] // blue-600
+  const r = Math.round(c0[0] + (c1[0] - c0[0]) * t)
+  const g = Math.round(c0[1] + (c1[1] - c0[1]) * t)
+  const b = Math.round(c0[2] + (c1[2] - c0[2]) * t)
+  return `rgb(${r}, ${g}, ${b})`
+}
+function heatStyle(name: string, value: unknown): { backgroundColor: string; color?: string } | null {
+  if (!heatmapCols.value.has(name)) return null
+  const r = ranges.value[name]
+  if (!r) return null
+  if (value === null || value === undefined) return null
+  const num = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(num)) return null
+  const [lo, hi] = r
+  const t = hi > lo ? Math.min(1, Math.max(0, (num - lo) / (hi - lo))) : 0.5
+  const st: { backgroundColor: string; color?: string } = { backgroundColor: heatBg(t) }
+  if (t > 0.62) st.color = '#ffffff'
+  return st
+}
+
+function headerCellStyle(meta: ColMeta): Record<string, string> {
+  const s: Record<string, string> = { width: COL_W + 'px' }
+  if (meta.pinned) {
+    s.position = 'sticky'
+    s.left = meta.left + 'px'
+  }
+  return s
+}
+function bodyCellStyle(meta: ColMeta, row: Record<string, unknown> | undefined): Record<string, string> {
+  const s: Record<string, string> = { width: COL_W + 'px' }
+  if (meta.pinned) {
+    s.position = 'sticky'
+    s.left = meta.left + 'px'
+  }
+  const h = heatStyle(meta.col.name, row ? row[meta.col.name] : undefined)
+  if (h) {
+    s.backgroundColor = h.backgroundColor
+    if (h.color) s.color = h.color
+  }
+  return s
+}
+
+// Any non-default view state -> show the "Reset view" affordance.
+const viewDirty = computed(
+  () =>
+    sortSpec.value.length > 0 ||
+    pinnedCols.value.size > 0 ||
+    heatmapCols.value.size > 0 ||
+    !!search.value ||
+    hiddenCols.value.size > 0,
+)
+function resetView(): void {
+  // Capture the server-affecting state BEFORE clearing it: a reload is only
+  // needed if a sort or search was actually active (pin/heatmap/order/hide are
+  // client-only and never touch the window).
+  const hadSort = sortSpec.value.length > 0
+  const hadSearch = !!search.value
+  sortSpec.value = []
+  pinnedCols.value = new Set()
+  heatmapCols.value = new Set()
+  hiddenCols.value = new Set()
+  colOrder.value = columns.value.map((c) => c.name)
+  if (searchTimer) { clearTimeout(searchTimer); searchTimer = null }
+  searchInput.value = ''
+  search.value = ''
+  if (!hadSort && !hadSearch) return
+  reloadFromTop()
+}
+
+// Debounce the search box: only the settled value hits the server, and it resets
+// the window to the top (offset 0) so results start from the first match.
+watch(searchInput, (v) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    const next = v.trim()
+    if (next === search.value) return
+    search.value = next
+    reloadFromTop()
+  }, 300)
+})
+function clearSearch(): void {
+  if (searchTimer) { clearTimeout(searchTimer); searchTimer = null }
+  searchInput.value = ''
+  if (!search.value) return
+  search.value = ''
+  reloadFromTop()
+}
 
 async function loadWindow(offset: number): Promise<void> {
   const uuid = sessionUuid.value
+  const gen = reqGen.value
   if (!uuid || loading.value) return
   if (offset > 0 && rows.value.length >= total.value) return // fully loaded
   loading.value = true
@@ -44,25 +376,97 @@ async function loadWindow(offset: number): Promise<void> {
       offset,
       limit: PAGE,
       tableName: tableName.value ?? undefined,
+      sort: sortSpec.value,
+      search: search.value,
     })
-    // Session may have switched (a new upload) while this fetch was in flight —
-    // drop the stale window rather than writing another session's rows.
-    if (uuid !== sessionUuid.value) return
+    // Session switched (new upload) OR a newer reset superseded this fetch while it
+    // was in flight -> drop the stale window rather than writing the wrong rows.
+    if (uuid !== sessionUuid.value || gen !== reqGen.value) return
     if (offset === 0) {
       columns.value = res.columns
       rows.value = res.rows
+      // Heatmap scale: whole-table ranges arrive only on the first window; cache
+      // them (left unfiltered server-side so the scale stays stable under search).
+      ranges.value = res.ranges ?? {}
+      // Seed/extend the column order: keep the current order for surviving columns,
+      // append any newly-added ones, drop any that disappeared (rename/drop).
+      const names = res.columns.map((c) => c.name)
+      const kept = colOrder.value.filter((n) => names.includes(n))
+      const added = names.filter((n) => !kept.includes(n))
+      colOrder.value = [...kept, ...added]
     } else {
       rows.value = rows.value.concat(res.rows)
     }
     total.value = res.total
   } catch (e) {
-    if (uuid === sessionUuid.value) gridError.value = apiErrorMessage(e)
+    if (uuid === sessionUuid.value && gen === reqGen.value) gridError.value = apiErrorMessage(e)
   } finally {
-    if (uuid === sessionUuid.value) loading.value = false
+    if (uuid === sessionUuid.value && gen === reqGen.value) loading.value = false
   }
 }
 
-// A new (or cleared) session resets the grid and loads the first window.
+// Single reload entry point: bump the generation (discarding any in-flight
+// window), clear the loaded prefix, scroll to top, and fetch the first window
+// under the current sort/search.
+function reloadFromTop(): void {
+  if (!sessionUuid.value) return
+  reqGen.value++
+  rows.value = []
+  total.value = 0
+  gridError.value = null
+  loading.value = false
+  if (scrollEl.value) scrollEl.value.scrollTop = 0
+  void loadWindow(0)
+}
+
+// Export the ENTIRE cleaned table to `fmt`, server-side: the backend streams the whole
+// table (DuckDB COPY for csv/tsv/json/parquet, openpyxl for xlsx) so we don't page it
+// client-side. It always reflects the current cleaned state (same session table the grid
+// reads) -- NOT the current sort/search view, which are grid-local. Aborts cleanly if the
+// session switches mid-export.
+const exporting = ref(false)
+const exportMenuOpen = ref(false)
+const exportMenuPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+
+const EXPORT_FORMATS: { fmt: ExportFormat; label: string; ext: string }[] = [
+  { fmt: 'csv', label: 'CSV (.csv)', ext: 'csv' },
+  { fmt: 'xlsx', label: 'Excel (.xlsx)', ext: 'xlsx' },
+  { fmt: 'parquet', label: 'Parquet (.parquet)', ext: 'parquet' },
+  { fmt: 'json', label: 'JSON (.json)', ext: 'json' },
+]
+
+function toggleExportMenu(e: MouseEvent): void {
+  if (exportMenuOpen.value) {
+    exportMenuOpen.value = false
+    return
+  }
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  exportMenuPos.value = { x: r.right, y: r.bottom }
+  exportMenuOpen.value = true
+}
+
+async function exportAs(fmt: ExportFormat, ext: string): Promise<void> {
+  const uuid = sessionUuid.value
+  exportMenuOpen.value = false
+  if (!uuid || exporting.value || columns.value.length === 0) return
+  exporting.value = true
+  gridError.value = null
+  try {
+    const blob = await exportTable(uuid, fmt, tableName.value ?? undefined)
+    if (uuid !== sessionUuid.value) return // session switched -> discard the download
+    downloadBlob(exportFilename(fileName.value, '-cleaned', ext), blob)
+  } catch (e) {
+    // A failed blob request carries its error body as a Blob, not parsed JSON.
+    if (uuid === sessionUuid.value) gridError.value = await blobErrorMessage(e)
+  } finally {
+    // Always release the flag -- it is UI-only, so a stale-session write is harmless
+    // and never clearing it would lock exports for the next session.
+    exporting.value = false
+  }
+}
+
+// A new (or cleared) session resets the grid AND every view control, then loads
+// the first window.
 watch(
   sessionUuid,
   (uuid) => {
@@ -70,13 +474,42 @@ watch(
     columns.value = []
     total.value = 0
     gridError.value = null
-    // Release the guard so a switch mid-load isn't blocked by the prior session's
-    // in-flight fetch; that stale fetch is discarded by the uuid check in loadWindow.
-    loading.value = false
-    if (uuid) void loadWindow(0)
+    menuCol.value = null
+    // A different dataset -> forget every per-dataset view choice.
+    hiddenCols.value = new Set()
+    colOrder.value = []
+    pinnedCols.value = new Set()
+    heatmapCols.value = new Set()
+    ranges.value = {}
+    sortSpec.value = []
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null }
+    searchInput.value = ''
+    search.value = ''
+    dragCol.value = null
+    dragOverCol.value = null
+    colMenuOpen.value = false
+    exportMenuOpen.value = false
+    if (uuid) reloadFromTop()
   },
   { immediate: true },
 )
+
+// A transform / undo / redo bumps dataVersion (the schema or row set changed under
+// the same session). Reset to a clean first window. Sort + search feed the server
+// window and could reference a renamed/dropped column, so both are cleared (fail-safe
+// against a 400); pin/heatmap/order are client-only and degrade gracefully (an absent
+// column is simply filtered out), so they persist across the same dataset.
+watch(dataVersion, () => {
+  if (!sessionUuid.value) return
+  menuCol.value = null
+  colMenuOpen.value = false
+  exportMenuOpen.value = false
+  sortSpec.value = []
+  if (searchTimer) { clearTimeout(searchTimer); searchTimer = null }
+  searchInput.value = ''
+  search.value = ''
+  reloadFromTop()
+})
 
 // Infinite scroll: when the last rendered row reaches the tail of what we have,
 // fetch the next window. `loading` is set synchronously in loadWindow, so this
@@ -103,20 +536,77 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
   <div class="flex flex-col overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm">
     <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-4 py-3">
       <h3 class="text-sm font-semibold text-ink-gray-8">Data Grid</h3>
-      <span class="text-xs text-ink-gray-5">
-        <template v-if="sessionUuid">
-          {{ rows.length.toLocaleString() }} / {{ total.toLocaleString() }} rows
-          <span v-if="loading" class="inline-flex items-center gap-1 text-primary">
-            <Loader2 class="h-3 w-3 animate-spin" /> loading…
-          </span>
-        </template>
-        <template v-else>0 rows</template>
-      </span>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-ink-gray-5">
+          <template v-if="sessionUuid">
+            {{ rows.length.toLocaleString() }} / {{ total.toLocaleString() }} rows
+            <span v-if="search" class="text-ink-gray-4">(filtered)</span>
+            <span v-if="loading" class="inline-flex items-center gap-1 text-primary">
+              <Loader2 class="h-3 w-3 animate-spin" /> loading…
+            </span>
+          </template>
+          <template v-else>0 rows</template>
+        </span>
+
+        <!-- Search all columns (server-side substring, debounced) -->
+        <div v-if="sessionUuid" class="relative">
+          <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-gray-4" />
+          <input
+            v-model="searchInput"
+            type="text"
+            placeholder="Search all columns…"
+            class="w-48 rounded-2 border border-outline-gray-2 bg-surface-base py-1 pl-7 pr-6 text-xs text-ink-gray-8 placeholder:text-ink-gray-4 focus:border-primary focus:outline-none"
+          />
+          <button
+            v-if="searchInput"
+            type="button"
+            class="absolute right-1.5 top-1/2 -translate-y-1/2 text-ink-gray-4 transition-colors hover:text-ink-gray-7"
+            title="Clear search"
+            @click="clearSearch"
+          >
+            <X class="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <button
+          v-if="sessionUuid && viewDirty"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2"
+          title="Clear sort, filter, pins, heatmap, hidden & reordered columns"
+          @click.stop="resetView"
+        >
+          <RotateCcw class="h-3.5 w-3.5" /> Reset view
+        </button>
+        <button
+          v-if="sessionUuid"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2"
+          :class="{ 'bg-surface-gray-2': colMenuOpen }"
+          title="Show or hide columns"
+          @click.stop="toggleColMenu($event)"
+        >
+          <Eye class="h-3.5 w-3.5" /> Columns
+        </button>
+        <button
+          v-if="sessionUuid"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+          :class="{ 'bg-surface-gray-2': exportMenuOpen }"
+          :disabled="exporting || total === 0"
+          title="Download the full cleaned table"
+          @click.stop="toggleExportMenu($event)"
+        >
+          <Loader2 v-if="exporting" class="h-3.5 w-3.5 animate-spin text-primary" />
+          <Download v-else class="h-3.5 w-3.5" />
+          Export
+          <ChevronDown class="h-3 w-3" />
+        </button>
+      </div>
     </div>
 
     <!-- Scroll container is always mounted so the virtualizer can attach to it
          before any data arrives; the states below render inside it. -->
-    <div ref="scrollEl" class="overflow-auto relative" style="height: 440px">
+    <div ref="scrollEl" class="overflow-auto relative" style="height: 440px" @scroll="menuCol = null; colMenuOpen = false; exportMenuOpen = false">
       <div
         v-if="gridError"
         class="absolute inset-0 flex items-center justify-center px-4 text-center text-sm text-ink-red"
@@ -135,18 +625,60 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
       >
         <Loader2 class="h-4 w-4 animate-spin" /> Loading…
       </div>
+      <div
+        v-else-if="!loading && rows.length === 0 && search"
+        class="absolute inset-0 flex items-center justify-center px-4 text-center text-sm text-ink-gray-4"
+      >
+        No rows match “{{ search }}”.
+      </div>
 
       <div v-else :style="{ width: gridWidth + 'px', minWidth: '100%' }">
-        <!-- Sticky header row (pins vertically; scrolls horizontally with body) -->
+        <!-- Sticky header row (pins vertically; scrolls horizontally with body).
+             Each header: click to sort (shift-click to add a secondary key),
+             drag to reorder. -->
         <div class="flex sticky top-0 z-10 border-b border-outline-gray-1 bg-surface-gray-1">
           <div
-            v-for="col in columns"
-            :key="col.name"
-            class="shrink-0 truncate px-3 py-2 text-xs font-semibold text-ink-gray-7"
-            :style="{ width: COL_W + 'px' }"
-            :title="col.name + ' · ' + col.type"
+            v-for="meta in displayCols"
+            :key="meta.col.name"
+            class="flex shrink-0 cursor-pointer select-none items-center gap-1 px-3 py-2 transition-colors hover:bg-surface-gray-2"
+            :class="[
+              meta.pinned ? 'z-[5] bg-surface-gray-1' : '',
+              dragOverCol === meta.col.name ? 'ring-2 ring-inset ring-primary' : '',
+              dragCol === meta.col.name ? 'opacity-50' : '',
+            ]"
+            :style="headerCellStyle(meta)"
+            draggable="true"
+            :title="meta.col.name + ' · ' + meta.col.type + '  —  click to sort, drag to reorder'"
+            @click="onHeaderClick(meta.col, $event)"
+            @dragstart="onDragStart(meta.col.name, $event)"
+            @dragover.prevent="onDragOver(meta.col.name)"
+            @drop.prevent="onDrop(meta.col.name)"
+            @dragend="onDragEnd"
           >
-            {{ col.name }}
+            <Pin v-if="meta.pinned" class="h-3 w-3 shrink-0 text-primary" />
+            <span
+              class="truncate text-xs font-semibold text-ink-gray-7"
+            >
+              {{ meta.col.name }}
+            </span>
+            <span
+              v-if="sortInfo(meta.col.name)"
+              class="inline-flex shrink-0 items-center text-primary"
+            >
+              <ArrowUp v-if="sortInfo(meta.col.name)!.dir === 'asc'" class="h-3 w-3" />
+              <ArrowDown v-else class="h-3 w-3" />
+              <span v-if="sortSpec.length > 1" class="text-[9px] font-bold leading-none">{{ sortInfo(meta.col.name)!.idx }}</span>
+            </span>
+            <button
+              type="button"
+              class="ml-auto shrink-0 rounded-2 p-0.5 text-ink-gray-4 transition-colors hover:bg-surface-gray-3 hover:text-ink-gray-7"
+              title="Column actions"
+              draggable="false"
+              @click.stop="toggleMenu(meta.col.name, $event)"
+              @dragstart.stop.prevent
+            >
+              <MoreVertical class="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
 
@@ -159,17 +691,127 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
             :style="{ height: vRow.size + 'px', transform: `translateY(${vRow.start}px)` }"
           >
             <div
-              v-for="col in columns"
-              :key="col.name"
+              v-for="meta in displayCols"
+              :key="meta.col.name"
               class="shrink-0 truncate px-3 py-2 text-xs text-ink-gray-8"
-              :style="{ width: COL_W + 'px' }"
-              :title="cell(rows[vRow.index], col.name)"
+              :class="meta.pinned ? 'z-[5] bg-surface-base' : ''"
+              :style="bodyCellStyle(meta, rows[vRow.index])"
+              :title="cell(rows[vRow.index], meta.col.name)"
             >
-              {{ cell(rows[vRow.index], col.name) }}
+              {{ cell(rows[vRow.index], meta.col.name) }}
             </div>
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Column ⋮ menu (fixed-positioned; anchored to the clicked button). The
+         transparent backdrop catches an outside click to dismiss. -->
+    <div v-if="menuCol" class="fixed inset-0 z-40" @click="menuCol = null"></div>
+    <div
+      v-if="menuCol"
+      class="fixed z-50 w-52 overflow-hidden rounded-3 border border-outline-gray-1 bg-surface-base py-1 shadow-md"
+      :style="{ top: menuPos.y + 4 + 'px', left: menuPos.x + 'px', transform: 'translateX(-100%)' }"
+    >
+      <div class="truncate px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-ink-gray-4">
+        {{ menuCol }}
+      </div>
+      <!-- View controls (grid-local; never mutate data) -->
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium text-ink-gray-8 transition-colors hover:bg-surface-gray-2"
+        @click="togglePin"
+      >
+        <Pin class="h-3.5 w-3.5 text-primary" /> {{ menuPinned ? 'Unfreeze column' : 'Freeze (pin left)' }}
+      </button>
+      <button
+        v-if="canHeatmap"
+        type="button"
+        class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium text-ink-gray-8 transition-colors hover:bg-surface-gray-2"
+        @click="toggleHeatmap"
+      >
+        <BarChart3 class="h-3.5 w-3.5 text-primary" /> {{ menuHeat ? 'Remove colour scale' : 'Colour scale (heatmap)' }}
+      </button>
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium text-ink-gray-8 transition-colors hover:bg-surface-gray-2"
+        @click="hideFromMenu"
+      >
+        <Eye class="h-3.5 w-3.5 text-ink-gray-5" /> Hide column
+      </button>
+      <div class="my-1 border-t border-outline-gray-1"></div>
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium text-ink-gray-8 transition-colors hover:bg-surface-gray-2"
+        @click="chooseProfile"
+      >
+        <BarChart3 class="h-3.5 w-3.5 text-primary" /> Profile column
+      </button>
+      <div class="my-1 border-t border-outline-gray-1"></div>
+      <button
+        v-for="item in COLUMN_OPS"
+        :key="item.op"
+        type="button"
+        class="flex w-full items-center px-3 py-1.5 text-left text-xs text-ink-gray-8 transition-colors hover:bg-surface-gray-2"
+        @click="chooseOp(item.op)"
+      >
+        {{ item.label }}
+      </button>
+    </div>
+
+    <!-- Export format menu (fixed-positioned; anchored to the Export button). Every
+         format is encoded server-side, so the download always reflects the cleaned table. -->
+    <div v-if="exportMenuOpen" class="fixed inset-0 z-40" @click="exportMenuOpen = false"></div>
+    <div
+      v-if="exportMenuOpen"
+      class="fixed z-50 w-48 overflow-hidden rounded-3 border border-outline-gray-1 bg-surface-base py-1 shadow-md"
+      :style="{ top: exportMenuPos.y + 4 + 'px', left: exportMenuPos.x + 'px', transform: 'translateX(-100%)' }"
+    >
+      <div class="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-ink-gray-4">
+        Export table as
+      </div>
+      <button
+        v-for="f in EXPORT_FORMATS"
+        :key="f.fmt"
+        type="button"
+        class="flex w-full items-center px-3 py-1.5 text-left text-xs text-ink-gray-8 transition-colors hover:bg-surface-gray-2"
+        @click="exportAs(f.fmt, f.ext)"
+      >
+        {{ f.label }}
+      </button>
+    </div>
+
+    <!-- Columns show/hide menu (fixed-positioned; lists ALL columns so a hidden one
+         can be brought back). Toggling only affects the grid's rendered columns. -->
+    <div v-if="colMenuOpen" class="fixed inset-0 z-40" @click="colMenuOpen = false"></div>
+    <div
+      v-if="colMenuOpen"
+      class="fixed z-50 max-h-[320px] w-56 overflow-auto rounded-3 border border-outline-gray-1 bg-surface-base py-1 shadow-md"
+      :style="{ top: colMenuPos.y + 4 + 'px', left: colMenuPos.x + 'px', transform: 'translateX(-100%)' }"
+    >
+      <div class="flex items-center justify-between px-3 py-1">
+        <span class="text-[11px] font-medium uppercase tracking-wide text-ink-gray-4">Columns</span>
+        <button
+          type="button"
+          class="text-[11px] text-ink-gray-4 transition-colors hover:text-ink-gray-7"
+          @click="showAllCols"
+        >
+          Show all
+        </button>
+      </div>
+      <label
+        v-for="col in columns"
+        :key="col.name"
+        class="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs text-ink-gray-8 transition-colors hover:bg-surface-gray-2"
+      >
+        <input
+          type="checkbox"
+          class="h-3.5 w-3.5 shrink-0 rounded border-outline-gray-3 text-primary focus:ring-0"
+          :checked="!hiddenCols.has(col.name)"
+          @change="toggleColVisible(col.name)"
+        />
+        <span class="truncate">{{ col.name }}</span>
+      </label>
     </div>
   </div>
 </template>

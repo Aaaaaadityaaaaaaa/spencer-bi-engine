@@ -153,6 +153,20 @@ def _unbound(table_name: str, columns: List[Tuple[str, str]]):
     return ibis.table(schema, name=table_name)
 
 
+def _validate_new_name(new_name: str, colnames: set) -> str:
+    """Validate a to-be-created column name for the add-column ops (TASK-018):
+    non-empty after trim, and not colliding with an existing column. A collision
+    matters because ``t.mutate(name=expr)`` silently REPLACES an existing column,
+    so a clash is rejected up front rather than clobbering data. Mirrors the guard
+    in ``_build_calc_sql``. Returns the trimmed name."""
+    new = (new_name or "").strip()
+    if not new:
+        raise TransformError("new column name is empty")
+    if new in colnames:
+        raise TransformError(f"column '{new}' already exists")
+    return new
+
+
 def _compile_structured(table_name: str, columns: List[Tuple[str, str]], param) -> str:
     """Build the Ibis expression for a structured op and compile to DuckDB SQL."""
     colnames = {c for c, _ in columns}
@@ -198,7 +212,12 @@ def _compile_structured(table_name: str, columns: List[Tuple[str, str]], param) 
             target = _ibis_dtype(param.new_type)
         except Exception as exc:
             raise TransformError(f"'{param.new_type}' is not a valid DuckDB type") from exc
-        expr = t.mutate(**{param.column: t[param.column].cast(target)})
+        # Coercing cast (TASK-017): TRY_CAST nulls un-parseable values instead of
+        # failing the whole column; strict CAST is the default. Same try_cast idiom
+        # already proven in quality_service. The compiled SQL reflects the choice.
+        col = t[param.column]
+        caster = col.try_cast(target) if param.coerce else col.cast(target)
+        expr = t.mutate(**{param.column: caster})
 
     elif op == "drop_column":
         if param.column not in colnames:
@@ -260,8 +279,35 @@ def _compile_structured(table_name: str, columns: List[Tuple[str, str]], param) 
             else:
                 raise TransformError(f"unknown case '{param.case}'")
             applied = True
+        if param.strip_special:
+            # TASK-018: drop every char that is not an ASCII letter/digit/space.
+            # Global REGEXP_REPLACE; `[...]` is a literal char class, not user input.
+            col = col.re_replace(r"[^A-Za-z0-9 ]", "")
+            applied = True
         if param.find is not None:
-            col = col.replace(param.find, param.replace or "")
+            if param.regex:
+                # TASK-018 regex mode: `find` is a regex, replace is global
+                # REGEXP_REPLACE (DuckDB re_replace is always global, no flags).
+                col = col.re_replace(param.find, param.replace or "")
+            else:
+                col = col.replace(param.find, param.replace or "")
+            applied = True
+        if param.pad_side is not None:
+            # TASK-018 pad: left/right pad to a fixed width with a single fill char.
+            # Compiles to a CASE (no truncation when already >= width). Guard the
+            # width and enforce single-char fill (multi-char overshoots in DuckDB).
+            width = param.pad_length
+            if not isinstance(width, int) or width <= 0:
+                raise TransformError("pad requires a positive pad_length")
+            fill = param.pad_char if param.pad_char else " "
+            if len(fill) != 1:
+                raise TransformError("pad_char must be a single character")
+            if param.pad_side == "left":
+                col = col.lpad(width, fill)
+            elif param.pad_side == "right":
+                col = col.rpad(width, fill)
+            else:
+                raise TransformError(f"unknown pad_side '{param.pad_side}'")
             applied = True
         if param.null_token is not None:
             col = col.nullif(param.null_token)
@@ -269,6 +315,145 @@ def _compile_structured(table_name: str, columns: List[Tuple[str, str]], param) 
         if not applied:
             raise TransformError("string_normalize requires at least one operation")
         expr = t.mutate(**{param.column: col})
+
+    elif op == "split_column":
+        # TASK-018 #3: derive a new column by splitting/extracting from a text column.
+        if param.column not in colnames:
+            raise TransformError(f"column '{param.column}' not found")
+        coltypes = {c: d for c, d in columns}
+        dt = coltypes.get(param.column, "").upper()
+        if not ("CHAR" in dt or "TEXT" in dt or "STRING" in dt):
+            raise TransformError(
+                f"split_column needs a text column; '{param.column}' is {dt or 'unknown'}"
+            )
+        new = _validate_new_name(param.new_column_name, colnames)
+        col = t[param.column]
+        if param.mode == "delimiter":
+            delim = param.delimiter or ""
+            if delim == "":
+                raise TransformError("split_column delimiter mode requires a non-empty delimiter")
+            if param.index < 0:
+                raise TransformError("split_column index must be >= 0")
+            # 0-based; out-of-range yields NULL (LIST_EXTRACT semantics).
+            newcol = col.split(delim)[param.index]
+        elif param.mode == "regex":
+            pat = param.pattern or ""
+            if pat == "":
+                raise TransformError("split_column regex mode requires a non-empty pattern")
+            if param.group < 0:
+                raise TransformError("split_column group must be >= 0")
+            # group 0 = whole match, N = Nth capture group (REGEXP_EXTRACT).
+            newcol = col.re_extract(pat, param.group)
+        else:
+            raise TransformError(f"unknown split mode '{param.mode}'")
+        expr = t.mutate(**{new: newcol})
+
+    elif op == "date_extract":
+        # TASK-018 #4: derive a new column from a DATE/TIMESTAMP source column.
+        if param.column not in colnames:
+            raise TransformError(f"column '{param.column}' not found")
+        coltypes = {c: d for c, d in columns}
+        dt = coltypes.get(param.column, "").upper()
+        is_timestamp = "TIMESTAMP" in dt or "DATETIME" in dt
+        is_date = ("DATE" in dt) and not is_timestamp
+        if not (is_date or is_timestamp):
+            raise TransformError(
+                f"date_extract needs a DATE/TIMESTAMP column; '{param.column}' is {dt or 'unknown'}"
+            )
+        new = _validate_new_name(param.new_column_name, colnames)
+        col = t[param.column]
+        if param.mode == "part":
+            part = param.part
+            if not part:
+                raise TransformError("date_extract part mode requires a part")
+            # hour/minute/second exist only on a timestamp; gate them on a DATE.
+            if part in {"hour", "minute", "second"} and not is_timestamp:
+                raise TransformError(
+                    f"'{part}' requires a TIMESTAMP column; '{param.column}' is a DATE"
+                )
+            if part == "year":
+                newcol = col.year()
+            elif part == "month":
+                newcol = col.month()
+            elif part == "day":
+                newcol = col.day()
+            elif part == "quarter":
+                newcol = col.quarter()
+            elif part == "dayofyear":
+                newcol = col.day_of_year()
+            elif part == "weekday":
+                # Mon=0 .. Sun=6 (ISO index).
+                newcol = col.day_of_week.index()
+            elif part == "weekday_name":
+                newcol = col.day_of_week.full_name()
+            elif part == "hour":
+                newcol = col.hour()
+            elif part == "minute":
+                newcol = col.minute()
+            elif part == "second":
+                newcol = col.second()
+            else:
+                raise TransformError(f"unknown date part '{part}'")
+        elif param.mode == "format":
+            fmt = param.date_format or ""
+            if fmt == "":
+                raise TransformError("date_extract format mode requires a non-empty format")
+            newcol = col.strftime(fmt)
+        else:
+            raise TransformError(f"unknown date_extract mode '{param.mode}'")
+        expr = t.mutate(**{new: newcol})
+
+    elif op == "bin_column":
+        # TASK-018 #6: bin a numeric column into a new 0-based integer bin index.
+        if param.column not in colnames:
+            raise TransformError(f"column '{param.column}' not found")
+        coltypes = {c: d for c, d in columns}
+        dt = coltypes.get(param.column, "").upper()
+        # DuckDB numeric families (INT covers TINY/SMALL/BIG/HUGE/INTEGER).
+        if not any(m in dt for m in ("INT", "DECIMAL", "DOUBLE", "FLOAT", "REAL", "NUMERIC")):
+            raise TransformError(
+                f"bin_column needs a numeric column; '{param.column}' is {dt or 'unknown'}"
+            )
+        new = _validate_new_name(param.new_column_name, colnames)
+        if not (2 <= param.bins <= 50):
+            raise TransformError("bin_column requires bins between 2 and 50")
+        col = t[param.column]
+        if param.method == "equal_width":
+            # Self-contained equal-width binning; 0-based bins 0..bins-1, handles
+            # the max edge and NULLs. No pre-query needed (compiles to one SELECT).
+            newcol = col.histogram(nbins=param.bins)
+        elif param.method == "quantile":
+            # Equal-count (quantile) buckets. Used BARE so Ibis supplies the
+            # ORDER BY window; an explicit .over(...) raises in ibis 12.0.0.
+            newcol = col.ntile(param.bins)
+        else:
+            raise TransformError(f"unknown bin method '{param.method}'")
+        expr = t.mutate(**{new: newcol})
+
+    elif op == "flag_outliers":
+        # TASK-019 #7: add a boolean column flagging statistical outliers in a
+        # numeric column. Full-frame window stats (mean/std OVER the whole table),
+        # so it stays set-based -- no ordered window needed (that is fill_down).
+        if param.column not in colnames:
+            raise TransformError(f"column '{param.column}' not found")
+        coltypes = {c: d for c, d in columns}
+        dt = coltypes.get(param.column, "").upper()
+        if not any(m in dt for m in ("INT", "DECIMAL", "DOUBLE", "FLOAT", "REAL", "NUMERIC")):
+            raise TransformError(
+                f"flag_outliers needs a numeric column; '{param.column}' is {dt or 'unknown'}"
+            )
+        new = _validate_new_name(param.new_column_name, colnames)
+        if param.method != "zscore":
+            raise TransformError(f"unknown outlier method '{param.method}'")
+        if not (param.threshold > 0):
+            raise TransformError("flag_outliers requires a positive threshold")
+        col = t[param.column]
+        # |x - mean| > threshold * std, evaluated with full-frame window mean/std.
+        # A constant column has std 0 -> nothing flagged; a single row has NULL std
+        # -> the flag is NULL for that row (documented, acceptable). NULL inputs
+        # yield a NULL flag (never spuriously True).
+        is_out = (col - col.mean()).abs() > (param.threshold * col.std())
+        expr = t.mutate(**{new: is_out})
 
     else:
         raise TransformError(f"unsupported structured op '{op}'")
@@ -384,6 +569,43 @@ def _build_filter_sql(table_name: str, columns: List[Tuple[str, str]], param) ->
     return f"SELECT * FROM {table_name} WHERE {where}"
 
 
+def _build_filldown_sql(table_name: str, columns: List[Tuple[str, str]], param) -> str:
+    """fill_down (TASK-019 #7): forward/backward-fill nulls using the last/next
+    non-null value in stable row order.
+
+    Unlike every other structured op, this needs an ORDERED window -- but the Ibis
+    compile path is deliberately set-based (an unbound table has no row order), so
+    it can't express one. A MATERIALIZED base table, however, exposes DuckDB's
+    ``rowid`` pseudocolumn, which is exactly the stable order ``/data`` already
+    reads by. So this compiles raw SQL over ``rowid`` rather than via Ibis.
+
+    SECURITY: no user string reaches the SQL. Only ``column`` is interpolated, and
+    only after validating it against the live schema + quoting it; ``direction`` is
+    a closed Literal. The window frame includes CURRENT ROW, so a non-null value is
+    always kept as-is; COALESCE is defensive belt-and-suspenders."""
+    colnames = {c for c, _ in columns}
+    if param.column not in colnames:
+        raise TransformError(f"column '{param.column}' not found")
+    q = _quote_ident(param.column)
+    if param.direction == "down":
+        # Carry the last non-null value forward (rows up to and including this one).
+        filled = (
+            f"COALESCE({q}, LAST_VALUE({q} IGNORE NULLS) OVER "
+            f"(ORDER BY rowid ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))"
+        )
+    elif param.direction == "up":
+        # Carry the next non-null value backward (this row and all following).
+        filled = (
+            f"COALESCE({q}, FIRST_VALUE({q} IGNORE NULLS) OVER "
+            f"(ORDER BY rowid ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING))"
+        )
+    else:
+        raise TransformError("fill_down direction must be 'down' or 'up'")
+    # REPLACE swaps just this column in place; * keeps every other column unchanged
+    # and does NOT project the rowid pseudocolumn, so the schema is preserved.
+    return f"SELECT * REPLACE ({filled} AS {q}) FROM {table_name}"
+
+
 def _compile_op(table_name: str, columns: List[Tuple[str, str]], param) -> str:
     """Compile any transform op to a single DuckDB SELECT string. Shared by
     apply_transform and preview_transform so both paths validate identically."""
@@ -391,6 +613,8 @@ def _compile_op(table_name: str, columns: List[Tuple[str, str]], param) -> str:
         return _build_calc_sql(table_name, columns, param)
     if param.op == "filter_rows":
         return _build_filter_sql(table_name, columns, param)
+    if param.op == "fill_down":
+        return _build_filldown_sql(table_name, columns, param)
     return _compile_structured(table_name, columns, param)
 
 
@@ -467,7 +691,7 @@ async def preview_transform(session_uuid: str, table_name: str, param, sample_li
     col_types = [r[1] for r in (desc or [])]
     sample = [dict(zip(col_names, row)) for row in (rows or [])]
 
-    return {
+    result: Dict[str, Any] = {
         "op": param.op,
         "row_count_before": before,
         "row_count_after": after,
@@ -476,6 +700,24 @@ async def preview_transform(session_uuid: str, table_name: str, param, sample_li
         "sample": sample,
         "compiled_sql": select_sql,
     }
+
+    # Honest coercing-cast preview (TASK-017): report how many currently non-null
+    # values TRY_CAST can't parse and would set to NULL. One bounded aggregate,
+    # only on the coerce path; uses the SAME try_cast(target) the apply will run,
+    # so the count matches exactly. The type was already validated by _compile_op
+    # above. Fail-closed like the SELECTs -- any failure becomes a 400, never a 500.
+    if param.op == "cast" and param.coerce:
+        try:
+            t = _unbound(table_name, columns)
+            target = _ibis_dtype(param.new_type)
+            col = t[param.column]
+            agg = t.aggregate(nn=col.count(), ok=col.try_cast(target).count())
+            crow = (await db_manager.run_readwrite(ibis.to_sql(agg, dialect="duckdb")))[0]
+            result["coerced_null_count"] = int(crow[0] or 0) - int(crow[1] or 0)
+        except Exception as exc:
+            raise TransformError(f"preview could not be computed: {exc}") from exc
+
+    return result
 
 
 async def undo(session_uuid: str, table_name: str) -> Tuple[int, int, int]:

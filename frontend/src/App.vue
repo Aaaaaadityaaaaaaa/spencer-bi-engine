@@ -12,9 +12,14 @@ import {
   Undo2,
   Redo2,
 } from '@lucide/vue'
+import { useSession } from './composables/useSession'
 
 const route = useRoute()
 const collapsed = ref(false)
+
+// Transform history lives on the shared session; the header Undo/Redo act on the
+// loaded dataset regardless of the current route.
+const { canUndo, canRedo, applying, undo, redo } = useSession()
 
 // Primary sections — real routes driven by vue-router.
 const navItems = [
@@ -107,18 +112,27 @@ const futureItems = [
       <header class="flex h-16 shrink-0 items-center justify-between border-b border-outline-gray-1 bg-surface-base px-8">
         <h2 class="text-lg font-semibold text-ink-gray-9">{{ route.meta.title }}</h2>
         <div class="flex gap-2">
-          <!-- Undo/Redo are placeholders (no transform history in the UI yet); rendered disabled. -->
           <button
             type="button"
-            disabled
-            class="inline-flex cursor-not-allowed items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-3 py-1.5 text-sm font-medium text-ink-gray-4 shadow-sm"
+            :disabled="!canUndo || applying"
+            class="inline-flex items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-3 py-1.5 text-sm font-medium shadow-sm transition-colors"
+            :class="(!canUndo || applying)
+              ? 'cursor-not-allowed text-ink-gray-4'
+              : 'text-ink-gray-7 hover:bg-surface-gray-2 hover:text-ink-gray-9'"
+            title="Undo last transform"
+            @click="undo"
           >
             <Undo2 class="h-4 w-4" /> Undo
           </button>
           <button
             type="button"
-            disabled
-            class="inline-flex cursor-not-allowed items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-3 py-1.5 text-sm font-medium text-ink-gray-4 shadow-sm"
+            :disabled="!canRedo || applying"
+            class="inline-flex items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-3 py-1.5 text-sm font-medium shadow-sm transition-colors"
+            :class="(!canRedo || applying)
+              ? 'cursor-not-allowed text-ink-gray-4'
+              : 'text-ink-gray-7 hover:bg-surface-gray-2 hover:text-ink-gray-9'"
+            title="Redo transform"
+            @click="redo"
           >
             <Redo2 class="h-4 w-4" /> Redo
           </button>

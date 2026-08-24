@@ -1,18 +1,18 @@
 <script setup lang="ts">
+// Query Engine pillar: a MySQL-Workbench-style SQL console with AI NL->SQL assist
+// (QueryConsole) plus the business dictionary (CustomInstructions). Runs against the
+// loaded dataset, so the whole surface is gated until a session exists.
 import { Database } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
-import AIQueryBox from '../components/AIQueryBox.vue'
+import QueryConsole from '../components/QueryConsole.vue'
 import CustomInstructions from '../components/CustomInstructions.vue'
 
-// The Query Engine runs against the loaded dataset; gate it until a session exists.
-// A MySQL-Workbench-style SQL editor (with AI NL->SQL assist) replaces this shell in a
-// later task; for now it hosts the existing query + instructions components.
 const { sessionUuid } = useSession()
 </script>
 
 <template>
-  <div v-if="sessionUuid" class="space-y-8">
-    <AIQueryBox />
+  <div v-if="sessionUuid" class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+    <QueryConsole />
     <CustomInstructions />
   </div>
   <div
