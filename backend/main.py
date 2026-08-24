@@ -7,10 +7,12 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from routers import session, ai, query, schedule, admin
+from routers import session, ai, query, schedule, admin, auth
+from deps import require_admin, require_session_owner
+from services.app_db import init_db
 from services.duckdb_manager import db_manager
 from services.redis_manager import redis_manager
 from services import cleanup_service
@@ -90,17 +92,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Auth routes mint / read identity -> mounted WITHOUT a session guard.
+app.include_router(auth.router, prefix="/auth", tags=["Auth"])
+
+# session.router is mixed (create_session only mints identity; the /{uuid}/*
+# routes guard per-route inside session.py), so it gets no blanket dependency.
 app.include_router(session.router, prefix="/sessions", tags=["Session & Ingestion"])
-app.include_router(query.router, prefix="/sessions", tags=["Data Grid & Charting"])
-app.include_router(ai.router, prefix="/sessions", tags=["AI Layer"])
-app.include_router(schedule.router, prefix="/sessions", tags=["Automation"])
-app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+# query / ai / schedule are 100% keyed by {session_uuid} -> one router-level
+# ownership gate covers every route (transitively requires a valid token first;
+# a non-owner gets 404, an anonymous caller 401).
+app.include_router(
+    query.router, prefix="/sessions", tags=["Data Grid & Charting"],
+    dependencies=[Depends(require_session_owner)],
+)
+app.include_router(
+    ai.router, prefix="/sessions", tags=["AI Layer"],
+    dependencies=[Depends(require_session_owner)],
+)
+app.include_router(
+    schedule.router, prefix="/sessions", tags=["Automation"],
+    dependencies=[Depends(require_session_owner)],
+)
+app.include_router(
+    admin.router, prefix="/admin", tags=["Admin"],
+    dependencies=[Depends(require_admin)],
+)
 
 @app.get("/health", tags=["Admin"])
 def health_check():
     return {"status": "ok"}
 
-@app.get("/test-duckdb", tags=["Admin"])
+@app.get("/test-duckdb", tags=["Admin"], dependencies=[Depends(require_admin)])
 async def test_duckdb():
     # A dummy call that simulates a long-running DB query without blocking the event loop
     def _slow_query():
@@ -126,6 +148,15 @@ _MEM_LIMIT_RE = re.compile(r"^\s*\d+(\.\d+)?\s*(%|[KMGT]?i?B)?\s*$", re.IGNORECA
 
 @app.on_event("startup")
 async def startup_event():
+    # Deploy-safety gate (TASK-028): in production, refuse to boot on a fatal
+    # misconfiguration (notably the forgeable built-in dev JWT key). No-op in dev.
+    config.assert_production_safety()
+
+    # Identity/ownership store (TASK-027): create the users/datasets tables if
+    # absent. Fail fast -- a deploy with an unreachable app DB has no working
+    # auth, so let the exception surface rather than swallowing it.
+    init_db()
+
     # Runtime hardening (TASK-013 D): apply DuckDB PRAGMAs via the existing
     # run_readwrite -- the frozen duckdb_manager is untouched. Closes the
     # documented-but-unimplemented memory_limit claim and enables bounded RAM /

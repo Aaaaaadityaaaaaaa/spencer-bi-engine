@@ -8,6 +8,7 @@ for ``SPENCER_CORS_ORIGINS`` -- values are resolved once at import time.
 
 All knobs have safe defaults so an un-configured deploy still runs bounded.
 """
+import logging
 import os
 
 # --- Upload guardrails ---------------------------------------------------
@@ -74,6 +75,77 @@ LLM_DAILY_COOLDOWN_SECONDS: int = int(os.getenv("SPENCER_LLM_DAILY_COOLDOWN_SECO
 # --- Filesystem layout ----------------------------------------------------
 # Root directory holding per-session upload dirs (`uploads/{uuid}/...`).
 UPLOADS_DIR: str = os.getenv("SPENCER_UPLOADS_DIR", "uploads")
+
+
+# --- Auth & multi-tenancy (TASK-027) -------------------------------------
+# JWT signing secret (HS256). REQUIRED in any real deployment: set
+# SPENCER_JWT_SECRET to a long random value. Unset -> a fixed built-in dev key
+# with a loud warning. The dev key is INSECURE (it ships in the repo, so tokens
+# signed with it are forgeable) and, being fixed, tokens survive a restart in
+# dev; a real deploy that forgets to set the env var is the only failure mode we
+# guard against, hence the warning. Kept >= 32 bytes so PyJWT doesn't warn about
+# a short HMAC key.
+_JWT_SECRET_ENV: str = os.getenv("SPENCER_JWT_SECRET", "").strip()
+JWT_SECRET_IS_DEV_FALLBACK: bool = not _JWT_SECRET_ENV
+JWT_SECRET: str = _JWT_SECRET_ENV or "spencer-dev-insecure-jwt-secret-change-me-0123456789"
+JWT_ALGORITHM: str = "HS256"
+# Access-token lifetime. Default 168h = 7 days.
+JWT_EXPIRY_HOURS: int = int(os.getenv("SPENCER_JWT_EXPIRY_HOURS", "168"))
+
+if JWT_SECRET_IS_DEV_FALLBACK:
+    logging.getLogger("spencer.config").warning(
+        "SPENCER_JWT_SECRET is not set -- using an INSECURE built-in dev key. "
+        "Set it to a long random value in any real deployment."
+    )
+
+# Identity / ownership store (SQLAlchemy URL). SQLite by default (zero-infra dev,
+# and what the test-suite runs against); production sets a Postgres URL, e.g.
+# postgresql+psycopg://user:pass@host/spencer. App code is dialect-neutral.
+APP_DB_URL: str = os.getenv("SPENCER_APP_DB_URL", "sqlite:///spencer_app.db")
+
+# Open self-serve registration. Set false to lock a deployment to already-
+# provisioned accounts (POST /auth/register then returns 403). Read LIVE in the
+# router (config.ALLOW_REGISTRATION) so it can be toggled/monkeypatched.
+ALLOW_REGISTRATION: bool = os.getenv("SPENCER_ALLOW_REGISTRATION", "true").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+# Owned sessions get a longer, activity-slid liveness TTL than the anonymous
+# SESSION_TTL default, so a logged-in user's dataset survives this many days of
+# inactivity before the sweeper may reclaim it. Slid on every owned request by
+# deps.require_session_owner.
+OWNED_SESSION_TTL_DAYS: int = int(os.getenv("SPENCER_OWNED_SESSION_TTL_DAYS", "30"))
+OWNED_SESSION_TTL_SECONDS: int = OWNED_SESSION_TTL_DAYS * 86400
+
+# --- Deployment environment / prod safety gate (TASK-028) ----------------
+# "production" turns on the strict startup checks below (called from main.py's
+# startup event). Any other value = development / permissive (today's behaviour).
+SPENCER_ENV: str = os.getenv("SPENCER_ENV", "development").strip().lower()
+IS_PRODUCTION: bool = SPENCER_ENV == "production"
+
+
+def assert_production_safety() -> None:
+    """Refuse to boot on a prod-fatal misconfiguration; a no-op outside production.
+
+    The one FATAL condition is the JWT dev fallback: if SPENCER_JWT_SECRET is unset
+    in production the app would sign tokens with the insecure key that ships in the
+    repo, so anyone could forge a bearer token for any user id. SQLite-in-prod is a
+    loud warning only -- it works for a tiny single-VM deploy, but Postgres is
+    recommended for concurrent multi-user writes + managed backups.
+    """
+    if not IS_PRODUCTION:
+        return
+    if JWT_SECRET_IS_DEV_FALLBACK:
+        raise RuntimeError(
+            "Refusing to start: SPENCER_ENV=production but SPENCER_JWT_SECRET is not set, so the "
+            "insecure built-in dev key would be used and every bearer token would be forgeable. "
+            "Set SPENCER_JWT_SECRET to a long random value, e.g. `openssl rand -hex 32`."
+        )
+    if APP_DB_URL.startswith("sqlite"):
+        logging.getLogger("spencer.config").warning(
+            "SPENCER_ENV=production but SPENCER_APP_DB_URL is SQLite; a Postgres URL is recommended "
+            "for concurrent multi-user writes and managed backups (postgresql+psycopg://...)."
+        )
 
 
 def ext_of(filename: str) -> str:

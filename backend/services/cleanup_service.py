@@ -122,6 +122,44 @@ async def sweep() -> dict:
     return result
 
 
+async def reclaim_session_storage(session_uuid: str) -> dict:
+    """Tear down ONE session's storage now: drop its DuckDB tables, purge its
+    Redis keys, and remove its upload dir. Used by the owner-initiated
+    ``DELETE /sessions/{uuid}`` (TASK-027); ``sweep()`` reclaims dead sessions on
+    a timer with the same primitives. Idempotent.
+
+    Security: same AP-8 discipline as sweep -- the (server-minted, but still
+    treated as untrusted) uuid is NEVER interpolated into SQL. We snapshot the
+    catalog, filter names in Python by the session's identifier prefix, and only
+    ``DROP`` catalog-sourced, quote-escaped identifiers."""
+    result = {"tables_dropped": 0, "dir_removed": False, "redis_keys_deleted": 0}
+
+    catalog_rows = await db_manager.run_readwrite(
+        "SELECT table_name FROM information_schema.tables"
+    )
+    catalog_names = [r[0] for r in (catalog_rows or [])]
+
+    uuid_ = session_uuid.replace("-", "_")
+    prefixes = (f"t_{uuid_}_", f"backup_{uuid_}_")
+    for name in catalog_names:
+        if name.startswith(prefixes):
+            await db_manager.run_readwrite(f"DROP TABLE IF EXISTS {_quote_ident(name)}")
+            result["tables_dropped"] += 1
+
+    result["redis_keys_deleted"] = redis_manager.purge_session(session_uuid)
+
+    dir_path = os.path.join(config.UPLOADS_DIR, session_uuid)
+    if os.path.isdir(dir_path):
+        shutil.rmtree(dir_path, ignore_errors=True)
+        result["dir_removed"] = True
+
+    if result["tables_dropped"]:
+        await db_manager.run_readwrite("CHECKPOINT")
+
+    return result
+
+
+
 async def storage_report() -> dict:
     """Point-in-time storage/liveness metrics for `GET /admin/storage`."""
     uploads_root = config.UPLOADS_DIR

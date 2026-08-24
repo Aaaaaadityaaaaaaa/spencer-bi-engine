@@ -1,0 +1,32 @@
+# Project Spencer — production reverse proxy + static host + automatic HTTPS.
+#
+# SITE_ADDRESS selects the hostname AND toggles TLS:
+#   - a real domain (e.g. app.example.com) -> Caddy provisions + renews a
+#     Let's Encrypt certificate automatically (ports 80 + 443 must be reachable).
+#   - ":80" (the default below)            -> plain HTTP, no cert; used for the
+#     local `docker compose up` proof and behind an external TLS terminator.
+# Set it in .env.production (SITE_ADDRESS=...). The backend hostname is the
+# compose service name `backend`.
+
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# --- API: everything the FastAPI app owns is proxied to the backend. -----
+	# Same-origin, so the browser never issues a cross-origin request and CORS is
+	# irrelevant behind the proxy. Note BOTH "/sessions" (exact — the POST that
+	# creates a session) and "/sessions/*" (every per-session route) are matched.
+	# /docs + /openapi.json + /redoc are convenience; delete those tokens to hide
+	# the API explorer in production.
+	@api path /auth/* /sessions /sessions/* /admin/* /health /test-duckdb /docs /openapi.json /redoc
+	handle @api {
+		reverse_proxy backend:8000
+	}
+
+	# --- SPA: serve the built assets; unknown paths fall back to index.html so
+	# the client-side router (history mode) handles deep links like /table, /login.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

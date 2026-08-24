@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # --- Python ---
 __pycache__/
@@ -19,6 +20,11 @@ backend/spencer.db.wal
 *.duckdb
 # Uploaded files, one dir per session
 backend/uploads/
+# Persistent SQLite identity store (users + dataset ownership): holds real account
+# rows (emails + bcrypt hashes) once anyone registers -- must never be committed.
+backend/spencer_app.db
+backend/spencer_app.db-wal
+backend/spencer_app.db-shm
 
 # --- Node / frontend ---
 node_modules/

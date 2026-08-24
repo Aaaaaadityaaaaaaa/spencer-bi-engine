@@ -16,6 +16,22 @@ export interface SessionInfo {
   columns: ColumnMeta[]
 }
 
+// --- Auth & multi-tenancy (TASK-027) ---
+// Mirrors backend UserResponse / TokenResponse. `created_at` is an ISO string.
+export interface AuthUser {
+  id: number
+  email: string
+  is_admin: boolean
+  created_at: string
+}
+
+// POST /auth/register and /auth/login both return this (TokenResponse).
+export interface AuthTokenResponse {
+  access_token: string
+  token_type: string
+  user: AuthUser
+}
+
 // A column descriptor inside DataResponse (backend PreviewColumn: name + type).
 export interface DataColumn {
   name: string

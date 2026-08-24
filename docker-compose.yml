@@ -1,15 +1,102 @@
-version: "3.9"
+# Project Spencer -- full single-VM production stack (TASK-028).
+#   web (Caddy) -> serves the built SPA + reverse-proxies the API + terminates TLS
+#   backend     -> FastAPI/uvicorn (DuckDB analytics + Redis client + Postgres app DB)
+#   db          -> Postgres 16 (identity / ownership store: users + datasets)
+#   redis       -> working cache + session-liveness TTL markers
+#
+# Config comes from `.env` (copy .env.production.example -> .env). compose reads
+# `.env` automatically for the ${...} values below.
+# Local dev can still run JUST Redis on the host: `docker compose up -d redis`.
+name: spencer
 
 services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-spencer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-spencer}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spencer} -d ${POSTGRES_DB:-spencer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
-    container_name: spencer_redis
     restart: unless-stopped
+    # Bound to localhost only: reachable for the host dev workflow, never exposed
+    # to the network. Services reach it over the compose network as `redis:6379`.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPENCER_ENV: production
+      SPENCER_JWT_SECRET: ${SPENCER_JWT_SECRET:?set SPENCER_JWT_SECRET in .env (openssl rand -hex 32)}
+      SPENCER_APP_DB_URL: postgresql+psycopg://${POSTGRES_USER:-spencer}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-spencer}
+      SPENCER_ALLOW_REGISTRATION: ${SPENCER_ALLOW_REGISTRATION:-false}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      SPENCER_JWT_EXPIRY_HOURS: ${SPENCER_JWT_EXPIRY_HOURS:-168}
+      SPENCER_OWNED_SESSION_TTL_DAYS: ${SPENCER_OWNED_SESSION_TTL_DAYS:-30}
+      SPENCER_MAX_UPLOAD_MB: ${SPENCER_MAX_UPLOAD_MB:-100}
+      # LLM keys (optional): supply whichever provider you use. Blank = AI layer off.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_KEYS: ${GEMINI_API_KEYS:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_API_KEYS: ${ANTHROPIC_API_KEYS:-}
+      SPENCER_LLM_MODEL: ${SPENCER_LLM_MODEL:-}
+    volumes:
+      - backend_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: ""
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # Empty -> Caddy applies its own ":80" default (plain HTTP). Set a domain in
+      # .env (SITE_ADDRESS=app.example.com) for automatic HTTPS.
+      SITE_ADDRESS: ${SITE_ADDRESS:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
+  pg_data:
   redis_data:
+  backend_data:
+  caddy_data:
+  caddy_config:

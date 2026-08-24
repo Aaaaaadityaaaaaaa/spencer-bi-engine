@@ -3,7 +3,8 @@ import os
 import re
 import csv
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 import config
 from models.schemas import (
@@ -17,9 +18,11 @@ from models.schemas import (
     HistoryResponse,
     ColumnSchema
 )
+from deps import get_current_user, get_db, require_session_owner
+from services.app_db import Dataset, User
 from services.duckdb_manager import db_manager
 from services.redis_manager import redis_manager
-from services import transform_service
+from services import cleanup_service, ownership_service, transform_service
 
 router = APIRouter()
 
@@ -237,16 +240,27 @@ def _resolve_table(session_uuid: str, table_name: Optional[str]) -> str:
     return next(iter(schema))
 
 @router.post("", response_model=SessionResponse)
-async def create_session(file: UploadFile = File(...)):
+async def create_session(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     session_uuid = str(uuid.uuid4())
     _reject_disallowed_type(file.filename)
     table_name, clean_name = _table_name_for(session_uuid, file.filename)
     # Mark the session live BEFORE persisting so the marker always exists before
-    # the upload dir -- the sweeper can never race a just-created session.
-    redis_manager.touch_session(session_uuid, config.SESSION_TTL_SECONDS)
+    # the upload dir -- the sweeper can never race a just-created session. An
+    # owned session gets the longer owned-session TTL (created only by an authed
+    # user now), superseding the anonymous 24h default.
+    redis_manager.touch_session(session_uuid, config.OWNED_SESSION_TTL_SECONDS)
     file_path = _persist_upload(session_uuid, file, clean_name)
 
     row_count, columns = await analyze_and_register_table(session_uuid, table_name, file_path, is_primary=True)
+
+    # Record ownership AFTER the data exists, so this user (and only this user)
+    # can reach the session. A failure here leaves an orphan table the sweeper
+    # reclaims once the marker lapses -- acceptable, and it never leaks to anyone.
+    ownership_service.record_dataset(db, session_uuid, user.id, table_name, file.filename)
 
     return SessionResponse(
         session_uuid=session_uuid,
@@ -255,7 +269,7 @@ async def create_session(file: UploadFile = File(...)):
         columns=columns
     )
 
-@router.post("/{session_uuid}/tables", response_model=TableUploadResponse)
+@router.post("/{session_uuid}/tables", response_model=TableUploadResponse, dependencies=[Depends(require_session_owner)])
 async def upload_table(session_uuid: str, file: UploadFile = File(...)):
     _reject_disallowed_type(file.filename)
     table_name, clean_name = _table_name_for(session_uuid, file.filename)
@@ -269,7 +283,8 @@ async def upload_table(session_uuid: str, file: UploadFile = File(...)):
         )
 
     # Refresh the liveness marker before persisting (anti-race, as in create).
-    redis_manager.touch_session(session_uuid, config.SESSION_TTL_SECONDS)
+    # Owned TTL so a second-table upload doesn't downgrade the session's lifetime.
+    redis_manager.touch_session(session_uuid, config.OWNED_SESSION_TTL_SECONDS)
     file_path = _persist_upload(session_uuid, file, clean_name)
 
     row_count, columns = await analyze_and_register_table(session_uuid, table_name, file_path, is_primary=False)
@@ -280,7 +295,7 @@ async def upload_table(session_uuid: str, file: UploadFile = File(...)):
         columns=columns
     )
 
-@router.get("/{session_uuid}/schema", response_model=SchemaResponse)
+@router.get("/{session_uuid}/schema", response_model=SchemaResponse, dependencies=[Depends(require_session_owner)])
 async def get_schema(session_uuid: str):
     schema_key = f"schema:{session_uuid}"
     schema_data = redis_manager.get_json(schema_key)
@@ -306,11 +321,20 @@ async def get_schema(session_uuid: str):
     return SchemaResponse(tables=tables)
 
 @router.delete("/{session_uuid}")
-async def delete_session(session_uuid: str):
-    # Teardown session, drop tables, clear Redis keys
-    return {"status": "deleted"}
+async def delete_session(
+    session_uuid: str,
+    _owner: Dataset = Depends(require_session_owner),
+    db: Session = Depends(get_db),
+):
+    """Owner-initiated teardown: drop the session's DuckDB tables, purge its Redis
+    keys, remove its upload dir, and delete the ownership row. The ownership guard
+    404s if the session is already gone or not the caller's, so this is safe to
+    call once; a second call 404s rather than double-freeing."""
+    counts = await cleanup_service.reclaim_session_storage(session_uuid)
+    ownership_service.delete_dataset(db, session_uuid)
+    return {"status": "deleted", **counts}
 
-@router.post("/{session_uuid}/transform", response_model=TransformResponse)
+@router.post("/{session_uuid}/transform", response_model=TransformResponse, dependencies=[Depends(require_session_owner)])
 async def apply_transform(session_uuid: str, payload: TransformParam, table_name: Optional[str] = None):
     tname = _resolve_table(session_uuid, table_name)
     try:
@@ -324,7 +348,7 @@ async def apply_transform(session_uuid: str, payload: TransformParam, table_name
     await refresh_table_schema_cache(session_uuid, tname, is_primary)
     return TransformResponse(schema_version=version, step=step, row_count=row_count)
 
-@router.post("/{session_uuid}/transform/preview", response_model=TransformPreviewResponse)
+@router.post("/{session_uuid}/transform/preview", response_model=TransformPreviewResponse, dependencies=[Depends(require_session_owner)])
 async def preview_transform(session_uuid: str, payload: TransformParam, table_name: Optional[str] = None):
     """Dry-run: report what the op WOULD do (row-count delta, resulting schema, a
     sample) without applying it -- no history step, no schema_version bump. Same
@@ -336,7 +360,7 @@ async def preview_transform(session_uuid: str, payload: TransformParam, table_na
         raise HTTPException(status_code=400, detail=str(exc))
     return TransformPreviewResponse(**result)
 
-@router.post("/{session_uuid}/undo", response_model=TransformResponse)
+@router.post("/{session_uuid}/undo", response_model=TransformResponse, dependencies=[Depends(require_session_owner)])
 async def undo_transform(session_uuid: str, table_name: Optional[str] = None):
     tname = _resolve_table(session_uuid, table_name)
     try:
@@ -348,7 +372,7 @@ async def undo_transform(session_uuid: str, table_name: Optional[str] = None):
     await refresh_table_schema_cache(session_uuid, tname, is_primary)
     return TransformResponse(schema_version=version, step=step, row_count=row_count)
 
-@router.post("/{session_uuid}/redo", response_model=TransformResponse)
+@router.post("/{session_uuid}/redo", response_model=TransformResponse, dependencies=[Depends(require_session_owner)])
 async def redo_transform(session_uuid: str, table_name: Optional[str] = None):
     tname = _resolve_table(session_uuid, table_name)
     try:
@@ -360,7 +384,7 @@ async def redo_transform(session_uuid: str, table_name: Optional[str] = None):
     await refresh_table_schema_cache(session_uuid, tname, is_primary)
     return TransformResponse(schema_version=version, step=step, row_count=row_count)
 
-@router.get("/{session_uuid}/history", response_model=HistoryResponse)
+@router.get("/{session_uuid}/history", response_model=HistoryResponse, dependencies=[Depends(require_session_owner)])
 async def get_history(session_uuid: str, table_name: Optional[str] = None):
     tname = _resolve_table(session_uuid, table_name)
     return HistoryResponse(**transform_service.get_history(session_uuid, tname))

@@ -19,6 +19,14 @@ interface DashboardState {
   dashboards: SavedDashboard[]
 }
 
+// Per-user key namespacing (TASK-027): a shared browser must never leak one user's
+// saved dashboards to another. The active user id (set by useAuth via loadForUser)
+// suffixes the storage key; with no user the store stays empty.
+let currentUserId: string | null = null
+function k(base: string): string {
+  return currentUserId ? `${base}:${currentUserId}` : base
+}
+
 // Load a persisted array, tolerating absent/corrupt/rejected storage (private mode,
 // hand-edited values) by starting clean rather than throwing at import time.
 function loadArray<T>(key: string): T[] {
@@ -32,9 +40,19 @@ function loadArray<T>(key: string): T[] {
   }
 }
 
+// State starts EMPTY (no import-time global-key read); useAuth calls loadForUser once
+// the active user is known.
 const state = reactive<DashboardState>({
-  dashboards: loadArray<SavedDashboard>(SAVED_KEY),
+  dashboards: [],
 })
+
+// Switch the store to a user's namespace: replace the in-memory list with that user's
+// persisted dashboards, or clear on logout (userId === null). Per-user keys stay on
+// disk so a re-login restores them.
+export function loadForUser(userId: string | null): void {
+  currentUserId = userId
+  state.dashboards = userId ? loadArray<SavedDashboard>(k(SAVED_KEY)) : []
+}
 
 function persist(key: string, value: unknown): void {
   if (typeof localStorage === 'undefined') return
@@ -74,7 +92,7 @@ function saveDashboard(name: string, snapshot: DashboardSnapshot): SavedDashboar
     charts: copy.charts,
   }
   state.dashboards = [row, ...state.dashboards]
-  persist(SAVED_KEY, state.dashboards)
+  persist(k(SAVED_KEY), state.dashboards)
   return row
 }
 
@@ -90,12 +108,12 @@ function renameDashboard(id: string, name: string): void {
   const clean = name.trim()
   if (!clean) return
   state.dashboards = state.dashboards.map((d) => (d.id === id ? { ...d, name: clean } : d))
-  persist(SAVED_KEY, state.dashboards)
+  persist(k(SAVED_KEY), state.dashboards)
 }
 
 function deleteDashboard(id: string): void {
   state.dashboards = state.dashboards.filter((d) => d.id !== id)
-  persist(SAVED_KEY, state.dashboards)
+  persist(k(SAVED_KEY), state.dashboards)
 }
 
 export function useDashboards() {

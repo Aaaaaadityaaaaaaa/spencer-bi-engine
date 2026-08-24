@@ -128,6 +128,9 @@ function isNotFound(e: unknown): boolean {
 state.restoring = readPersisted() !== null
 
 // Drop back to the empty state so the upload dropzone reappears (the "Replace" path).
+// Also used on logout (TASK-027): clears the active-session pointer so the next user
+// never inherits the previous user's session, and re-arms restoreSession so a
+// subsequent login can rehydrate that user's own session.
 function resetSession(): void {
   state.sessionUuid = null
   state.tableName = null
@@ -139,6 +142,7 @@ function resetSession(): void {
   state.canRedo = false
   state.historySteps = []
   clearPersisted()
+  restoreAttempted = false
   // dataVersion stays monotonic; consumers key off the change, not the value.
 }
 

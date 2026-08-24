@@ -26,11 +26,71 @@ import type {
   ExplainChartRequest,
   ExecuteResultResponse,
   CustomInstruction,
+  AuthTokenResponse,
+  AuthUser,
 } from '../types'
 
 const baseURL = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
 
 const http = axios.create({ baseURL })
+
+// --- Auth wiring (TASK-027) ---------------------------------------------------
+// The bearer token lives here as the single source of truth for outgoing requests;
+// useAuth keeps it in sync (setAuthToken on login/restore/logout). A request
+// interceptor attaches it so no call site has to thread the header through.
+let authToken: string | null = null
+export function setAuthToken(token: string | null): void {
+  authToken = token
+}
+
+http.interceptors.request.use((config) => {
+  if (authToken) {
+    config.headers = config.headers ?? {}
+    config.headers.Authorization = `Bearer ${authToken}`
+  }
+  return config
+})
+
+// A single hook fired when a *guarded* call comes back 401 (an expired/cleared
+// token mid-session). useAuth wires it to logout + redirect. Kept as a plain
+// callback rather than importing the router here, to avoid an api<->router cycle.
+// 401s from /auth/* (wrong password on the login form, or a stale token probed by
+// fetchMe on boot) are the caller's to handle, so they never trip the global hook.
+let onUnauthorized: (() => void) | null = null
+export function setOnUnauthorized(fn: (() => void) | null): void {
+  onUnauthorized = fn
+}
+
+http.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError) => {
+    const status = error.response?.status
+    const url = error.config?.url ?? ''
+    if (status === 401 && !url.startsWith('/auth/') && onUnauthorized) {
+      onUnauthorized()
+    }
+    return Promise.reject(error)
+  },
+)
+
+// --- Auth endpoints (TASK-027) ------------------------------------------------
+// POST /auth/register -- create an account, returns a token + the new user.
+export async function registerUser(email: string, password: string): Promise<AuthTokenResponse> {
+  const { data } = await http.post<AuthTokenResponse>('/auth/register', { email, password })
+  return data
+}
+
+// POST /auth/login -- exchange credentials for a token + user.
+export async function loginUser(email: string, password: string): Promise<AuthTokenResponse> {
+  const { data } = await http.post<AuthTokenResponse>('/auth/login', { email, password })
+  return data
+}
+
+// GET /auth/me -- the current user for the attached token (validates it on boot).
+export async function fetchMe(): Promise<AuthUser> {
+  const { data } = await http.get<AuthUser>('/auth/me')
+  return data
+}
 
 // POST /sessions -- multipart upload. The form field MUST be named `file`
 // (matches create_session's `file: UploadFile = File(...)`).

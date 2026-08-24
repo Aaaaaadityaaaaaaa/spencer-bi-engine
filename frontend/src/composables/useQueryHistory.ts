@@ -31,6 +31,14 @@ interface HistoryState {
   saved: SavedQuery[]
 }
 
+// Per-user key namespacing (TASK-027): a shared browser must never leak one user's
+// history/saved queries to another. The active user id (set by useAuth via
+// loadForUser) suffixes every storage key; with no user the store stays empty.
+let currentUserId: string | null = null
+function k(base: string): string {
+  return currentUserId ? `${base}:${currentUserId}` : base
+}
+
 // Load a persisted array, tolerating absent/corrupt/rejected storage (private mode,
 // hand-edited values) by starting clean rather than throwing at import time.
 function loadArray<T>(key: string): T[] {
@@ -44,10 +52,21 @@ function loadArray<T>(key: string): T[] {
   }
 }
 
+// State starts EMPTY (no import-time global-key read); useAuth calls loadForUser once
+// the active user is known, so nothing loads before we know whose data it is.
 const state = reactive<HistoryState>({
-  history: loadArray<QueryHistoryEntry>(HISTORY_KEY),
-  saved: loadArray<SavedQuery>(SAVED_KEY),
+  history: [],
+  saved: [],
 })
+
+// Switch the store to a user's namespace: replace (not append) the in-memory arrays
+// with that user's persisted data, or clear them on logout (userId === null). The
+// per-user keys are left on disk so a re-login restores them.
+export function loadForUser(userId: string | null): void {
+  currentUserId = userId
+  state.history = userId ? loadArray<QueryHistoryEntry>(k(HISTORY_KEY)) : []
+  state.saved = userId ? loadArray<SavedQuery>(k(SAVED_KEY)) : []
+}
 
 function persist(key: string, value: unknown): void {
   if (typeof localStorage === 'undefined') return
@@ -86,12 +105,12 @@ function recordRun(entry: {
     error: entry.error ?? null,
   }
   state.history = [row, ...state.history].slice(0, HISTORY_CAP) // newest first
-  persist(HISTORY_KEY, state.history)
+  persist(k(HISTORY_KEY), state.history)
 }
 
 function clearHistory(): void {
   state.history = []
-  persist(HISTORY_KEY, state.history)
+  persist(k(HISTORY_KEY), state.history)
 }
 
 function saveQuery(name: string, sql: string): void {
@@ -99,12 +118,12 @@ function saveQuery(name: string, sql: string): void {
   if (!clean || !sql.trim()) return
   const row: SavedQuery = { id: makeId(), name: clean, sql, savedAt: new Date().toISOString() }
   state.saved = [row, ...state.saved]
-  persist(SAVED_KEY, state.saved)
+  persist(k(SAVED_KEY), state.saved)
 }
 
 function deleteSaved(id: string): void {
   state.saved = state.saved.filter((q) => q.id !== id)
-  persist(SAVED_KEY, state.saved)
+  persist(k(SAVED_KEY), state.saved)
 }
 
 export function useQueryHistory() {

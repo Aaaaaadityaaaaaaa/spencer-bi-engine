@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "spencer-backend"
 version = "0.1.0"
@@ -12,7 +16,9 @@ dependencies = [
     "redis",
     "sqlglot",
     "apscheduler",
-    "pydantic",
+    # pydantic[email] pulls in email-validator, needed for the EmailStr fields on
+    # the auth request models (TASK-027).
+    "pydantic[email]",
     "python-multipart",
     "msgpack",
     # LiteLLM is the single NL->SQL gateway (Phase 6): one call path routes to
@@ -30,6 +36,17 @@ dependencies = [
     # that extension needs a runtime network INSTALL and ships per-platform, which
     # breaks offline / cross-OS deploys. openpyxl is pure-Python and vendored.
     "openpyxl",
+    # --- Auth & multi-tenancy (TASK-027) ---
+    # SQLAlchemy 2.x is the identity/ownership store ORM (users + datasets),
+    # dialect-neutral so the same code runs on SQLite (dev) and Postgres (prod).
+    "sqlalchemy>=2.0",
+    # PyJWT signs/verifies the HS256 bearer tokens. bcrypt hashes passwords -- used
+    # DIRECTLY (not via passlib, which probes a __about__ attr bcrypt>=4.1 removed).
+    "pyjwt>=2.8",
+    "bcrypt>=4.0",
+    # Postgres driver for the production APP_DB_URL (postgresql+psycopg://...).
+    # Unused on the SQLite dev/default path; declared so a prod install has it.
+    "psycopg[binary]>=3",
 ]
 
 [project.optional-dependencies]
@@ -40,3 +57,14 @@ dev = [
     "fakeredis",
     "httpx",
 ]
+
+[tool.setuptools]
+# The backend is deployed as an APPLICATION, not a library: the Docker image
+# delivers the source via `COPY . /app` + PYTHONPATH=/app and runs `uvicorn
+# main:app`, so `pip install .` exists ONLY to resolve the dependencies above --
+# it packages no modules of its own. Declaring packages/py-modules explicitly
+# (empty) disables setuptools flat-layout auto-discovery, which would otherwise
+# choke on the mix of loose modules (main.py, config.py, test_*.py) and the
+# __init__-less namespace dirs (routers/, services/, models/).
+packages = []
+py-modules = []

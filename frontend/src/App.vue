@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   Table,
   BarChart3,
@@ -11,20 +11,52 @@ import {
   PanelLeftClose,
   Undo2,
   Redo2,
+  LogOut,
 } from '@lucide/vue'
 import { useSession } from './composables/useSession'
+import { useAuth } from './composables/useAuth'
+import { setOnUnauthorized } from './services/api'
 
 const route = useRoute()
+const router = useRouter()
 const collapsed = ref(false)
 
 // Transform history lives on the shared session; the header Undo/Redo act on the
 // loaded dataset regardless of the current route.
 const { canUndo, canRedo, applying, undo, redo, restoreSession } = useSession()
 
+// Auth (TASK-027): the shell renders only when authenticated; /login shows bare.
+const { isAuthenticated, user, logout } = useAuth()
+
+function goLogin(): void {
+  if (router.currentRoute.value.path !== '/login') void router.replace({ path: '/login' })
+}
+
+function onLogout(): void {
+  logout()
+  goLogin()
+}
+
 // App is the always-mounted root (mounted exactly once), so this is the single place
 // to rehydrate a persisted session after a page refresh — before any view renders it.
 onMounted(() => {
-  void restoreSession()
+  // A guarded call returning 401 mid-session (token expired / cleared server-side) logs
+  // us out; goLogin handles the redirect. (401s from /auth/* self-handle — see api.ts.)
+  setOnUnauthorized(() => {
+    logout()
+    goLogin()
+  })
+  // main.ts already rehydrated the token synchronously, so restore only fires for an
+  // authenticated returning user; the empty state shows the upload screen otherwise.
+  if (isAuthenticated.value) void restoreSession()
+})
+
+// React to auth flips that don't originate from a navigation:
+//  - login (false -> true): rehydrate that user's persisted session, if any.
+//  - involuntary logout (true -> false, e.g. boot token-revalidation 401): bounce to /login.
+watch(isAuthenticated, (authed) => {
+  if (authed) void restoreSession()
+  else goLogin()
 })
 
 // Primary sections — real routes driven by vue-router.
@@ -42,7 +74,7 @@ const futureItems = [
 </script>
 
 <template>
-  <div class="flex h-screen bg-surface-gray-1 font-sans text-ink-gray-8">
+  <div v-if="isAuthenticated" class="flex h-screen bg-surface-gray-1 font-sans text-ink-gray-8">
     <!-- Sidebar -->
     <aside
       class="flex flex-col border-r border-outline-gray-1 bg-surface-gray-1 transition-all duration-200"
@@ -111,6 +143,40 @@ const futureItems = [
           <span v-if="!collapsed">Collapse</span>
         </button>
       </div>
+
+      <!-- Account (TASK-027): current user + logout -->
+      <div class="border-t border-outline-gray-1 p-3">
+        <div
+          class="flex items-center gap-2.5 rounded-3 px-3 py-2"
+          :class="collapsed ? 'justify-center' : ''"
+          :title="collapsed ? (user?.email ?? 'Account') : undefined"
+        >
+          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-gray-3 text-xs font-semibold uppercase text-ink-gray-7">
+            {{ (user?.email?.[0] ?? '?') }}
+          </div>
+          <div v-if="!collapsed" class="min-w-0 flex-1">
+            <p class="truncate text-xs font-medium text-ink-gray-8">{{ user?.email ?? 'Signed in' }}</p>
+          </div>
+          <button
+            v-if="!collapsed"
+            type="button"
+            class="shrink-0 rounded-3 p-1.5 text-ink-gray-5 transition-colors hover:bg-surface-gray-2 hover:text-ink-red"
+            title="Sign out"
+            @click="onLogout"
+          >
+            <LogOut class="h-4 w-4" />
+          </button>
+        </div>
+        <button
+          v-if="collapsed"
+          type="button"
+          class="mt-1 flex w-full items-center justify-center rounded-3 px-3 py-2 text-ink-gray-5 transition-colors hover:bg-surface-gray-2 hover:text-ink-red"
+          title="Sign out"
+          @click="onLogout"
+        >
+          <LogOut class="h-4 w-4 shrink-0" />
+        </button>
+      </div>
     </aside>
 
     <!-- Main Content -->
@@ -156,4 +222,7 @@ const futureItems = [
       </div>
     </main>
   </div>
+
+  <!-- Public routes (e.g. /login): rendered bare, without the app shell. -->
+  <router-view v-else />
 </template>

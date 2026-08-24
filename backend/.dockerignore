@@ -1,0 +1,22 @@
+# Keep the build context small and never bake secrets or runtime data into the image.
+.env
+.env.*
+
+# Python bytecode / envs / caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Runtime data — belongs on the /data volume, never in the image.
+spencer.db
+spencer.db.wal
+*.duckdb
+uploads/
+
+# Tests + throwaway artifacts not needed at runtime.
+test_*.py
+*.log

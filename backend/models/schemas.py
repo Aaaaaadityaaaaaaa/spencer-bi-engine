@@ -1,5 +1,32 @@
 from typing import List, Dict, Any, Optional, Literal, Union, Annotated
-from pydantic import BaseModel, Field
+from datetime import datetime
+from pydantic import BaseModel, EmailStr, Field
+
+# --- Auth & multi-tenancy (TASK-027) -------------------------------------
+# EmailStr requires the `email-validator` package (pulled in via pydantic[email]).
+# Password bounded at 72 bytes' worth of chars up top: bcrypt only considers the
+# first 72 *bytes*, so anything longer is silently ignored by the hash anyway --
+# we cap here for a clear 422 instead of a surprising truncation. min_length 8 is
+# a light floor, not a policy engine (out of scope this wave).
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=72)
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=200)
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    is_admin: bool
+    created_at: datetime
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
 
 class ColumnSchema(BaseModel):
     name: str
