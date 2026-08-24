@@ -23,7 +23,7 @@ import QueryHistory from './QueryHistory.vue'
 
 const { sessionUuid, tableName, columns } = useSession()
 const { recordRun, saveQuery } = useQueryHistory()
-const { takePendingQuestion } = useQuestionHandoff()
+const { pendingQuestion, takePendingQuestion } = useQuestionHandoff()
 
 const question = ref('')
 const sqlText = ref('')
@@ -167,10 +167,14 @@ async function assist(mode: SqlAssistMode): Promise<void> {
   }
 }
 
-// #26: a suggested question handed over from the Table section. onActivated fires on the
-// first mount AND every keep-alive re-insertion, so arriving here from a suggestion picks
-// it up exactly once (takePendingQuestion read-and-clears). A handed-over question starts
-// a fresh conversation rather than refining whatever was in the console before.
+// #26: a suggested question handed over from the co-located Suggested Questions strip.
+// Two entry points, both funnelling through the read-and-clear consumePending():
+//   - watch(pendingQuestion): the strip is a SIBLING on this view, so clicking a
+//     suggestion while the console is already active won't re-fire onActivated — the
+//     watch catches that in-view case.
+//   - onActivated: covers the first mount / any keep-alive re-insertion (e.g. a handoff
+//     set just before navigating here). Whichever runs first consumes it; the other
+//     then reads null. A handed-over question starts a fresh conversation.
 function consumePending(): void {
   const q = takePendingQuestion()
   if (!q) return
@@ -178,6 +182,9 @@ function consumePending(): void {
   question.value = q
   void generate()
 }
+watch(pendingQuestion, (q) => {
+  if (q) consumePending()
+})
 onActivated(consumePending)
 
 // A session switch (or "Replace dataset") invalidates the whole console: drop the

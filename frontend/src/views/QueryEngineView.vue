@@ -1,9 +1,12 @@
 <script setup lang="ts">
 // Query Engine pillar: a MySQL-Workbench-style SQL console with AI NL->SQL assist
-// (QueryConsole) plus the business dictionary (CustomInstructions). Runs against the
-// loaded dataset, so the whole surface is gated until a session exists.
+// (QueryConsole) plus the business dictionary (CustomInstructions), fronted by the
+// auto-EDA Suggested Questions strip (#26) — click one and it drops into the console
+// below. Runs against the loaded dataset, so the whole surface is gated until a
+// session exists.
 import { Database } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
+import SuggestedQuestions from '../components/SuggestedQuestions.vue'
 import QueryConsole from '../components/QueryConsole.vue'
 import CustomInstructions from '../components/CustomInstructions.vue'
 
@@ -11,9 +14,12 @@ const { sessionUuid } = useSession()
 </script>
 
 <template>
-  <div v-if="sessionUuid" class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-    <QueryConsole />
-    <CustomInstructions />
+  <div v-if="sessionUuid" class="space-y-6">
+    <SuggestedQuestions />
+    <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <QueryConsole />
+      <CustomInstructions />
+    </div>
   </div>
   <div
     v-else

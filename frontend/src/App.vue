@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   Table,
@@ -19,7 +19,13 @@ const collapsed = ref(false)
 
 // Transform history lives on the shared session; the header Undo/Redo act on the
 // loaded dataset regardless of the current route.
-const { canUndo, canRedo, applying, undo, redo } = useSession()
+const { canUndo, canRedo, applying, undo, redo, restoreSession } = useSession()
+
+// App is the always-mounted root (mounted exactly once), so this is the single place
+// to rehydrate a persisted session after a page refresh — before any view renders it.
+onMounted(() => {
+  void restoreSession()
+})
 
 // Primary sections — real routes driven by vue-router.
 const navItems = [

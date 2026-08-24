@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // #26 Auto-EDA: as soon as a dataset is loaded, offer a handful of analytical questions
-// inferred from its schema. Clicking one hands it to the Query Engine (useQuestionHandoff)
-// and routes there, where it is turned into SQL. The questions are cached per
-// schema_version server-side, so a transform regenerates them but a revisit is free.
+// inferred from its schema. Lives in the Query Engine section: clicking one hands it to
+// the co-located QueryConsole (useQuestionHandoff) which fills the NL box + generates SQL.
+// The questions are cached per schema_version server-side, so a transform regenerates them
+// but a revisit is free.
 import { ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { Sparkles, Loader2, AlertCircle, ArrowRight, RefreshCw, ChevronDown, ChevronRight } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import { useQuestionHandoff } from '../composables/useQuestionHandoff'
@@ -12,7 +12,6 @@ import { suggestQuestions, apiErrorMessage } from '../services/api'
 
 const { sessionUuid, dataVersion } = useSession()
 const { askInQueryEngine } = useQuestionHandoff()
-const router = useRouter()
 
 const questions = ref<string[]>([])
 const loading = ref(false)
@@ -56,10 +55,10 @@ watch(
   { immediate: true },
 )
 
-// Hand the question to the Query Engine and navigate there; QueryConsole consumes it.
+// Hand the question to the co-located QueryConsole; its watch on the handoff picks it
+// up, fills the NL box and generates SQL. No navigation — we're already in the Engine.
 function ask(q: string): void {
   askInQueryEngine(q)
-  void router.push('/query')
 }
 </script>
 
@@ -82,7 +81,7 @@ function ask(q: string): void {
             >{{ questions.length }}</span>
           </h3>
           <p class="mt-0.5 truncate text-xs text-ink-gray-5">
-            AI-suggested starting points — click one to explore it in the Query Engine.
+            AI-suggested starting points — click one to drop it into the console below.
           </p>
         </div>
       </button>
