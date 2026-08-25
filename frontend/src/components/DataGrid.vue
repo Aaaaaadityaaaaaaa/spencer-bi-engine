@@ -3,7 +3,7 @@ import { ref, computed, watch, onActivated, nextTick } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import {
   Loader2, MoreVertical, Download, Eye, BarChart3, ChevronDown,
-  ArrowUp, ArrowDown, Pin, Search, X, RotateCcw,
+  ArrowUp, ArrowDown, Pin, Search, X, RotateCcw, Plus,
 } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import { fetchData, exportTable, apiErrorMessage, blobErrorMessage } from '../services/api'
@@ -17,7 +17,22 @@ const PAGE = 500
 const ROW_H = 36   // px; fixed row height -> no per-row measurement needed
 const COL_W = 160  // px; fixed column width -> header/body columns stay aligned
 
-const { sessionUuid, tableName, fileName, dataVersion } = useSession()
+const { sessionUuid, tableName, fileName, dataVersion, tables, uploading, error, setActiveTable, addTable } = useSession()
+
+// Multi-table switcher (TASK-039): a hidden file input backs the "Add table" button;
+// addError surfaces an add failure (e.g. a duplicate table name) inline in the toolbar,
+// since the session error banner only renders on the empty upload screen.
+const tableFileInput = ref<HTMLInputElement | null>(null)
+const addError = ref<string | null>(null)
+async function onAddTableFile(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // let the user re-pick the same file after an error
+  if (!file) return
+  addError.value = null
+  const ok = await addTable(file)
+  if (!ok) addError.value = error.value ?? 'Could not add table.'
+}
 
 // Per-column ⋮ header menu -> asks the parent (TableView) to open the op dialog
 // pre-scoped to this column. The ribbon covers the same ops without a preset column.
@@ -494,12 +509,12 @@ watch(
   { immediate: true },
 )
 
-// A transform / undo / redo bumps dataVersion (the schema or row set changed under
-// the same session). Reset to a clean first window. Sort + search feed the server
-// window and could reference a renamed/dropped column, so both are cleared (fail-safe
-// against a 400); pin/heatmap/order are client-only and degrade gracefully (an absent
-// column is simply filtered out), so they persist across the same dataset.
-watch(dataVersion, () => {
+// A transform / undo / redo bumps dataVersion, and switching the active table changes
+// tableName — both mean the grid must reload a clean first window. Sort + search feed the
+// server window and could reference a column absent from the new schema/table, so both
+// are cleared (fail-safe against a 400); pin/heatmap/order are client-only and degrade
+// gracefully (an absent column is simply filtered out), so they persist.
+function resetToCleanWindow(): void {
   if (!sessionUuid.value) return
   menuCol.value = null
   colMenuOpen.value = false
@@ -509,6 +524,13 @@ watch(dataVersion, () => {
   searchInput.value = ''
   search.value = ''
   reloadFromTop()
+}
+watch(dataVersion, resetToCleanWindow)
+// Active-table switch (same session): reload the grid onto the newly selected table.
+// Guarded so the initial null→table set on upload/restore doesn't double-fetch — the
+// sessionUuid watch above already loads the first table in that case.
+watch(tableName, (next, prev) => {
+  if (next && prev && next !== prev) resetToCleanWindow()
 })
 
 // Infinite scroll: when the last rendered row reaches the tail of what we have,
@@ -535,7 +557,42 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
 <template>
   <div class="flex flex-col overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm">
     <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-4 py-3">
-      <h3 class="text-sm font-semibold text-ink-gray-8">Data Grid</h3>
+      <div class="flex items-center gap-2">
+        <h3 class="text-sm font-semibold text-ink-gray-8">Data Grid</h3>
+        <!-- Multi-table switcher (TASK-039): pick which loaded table the grid + data-prep act on. -->
+        <select
+          v-if="sessionUuid && tables.length > 1"
+          :value="tableName ?? ''"
+          class="rounded-2 border border-outline-gray-2 bg-surface-base py-1 pl-2 pr-6 text-xs font-medium text-ink-gray-8 focus:border-primary focus:outline-none"
+          title="Switch the active table"
+          @change="setActiveTable(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="t in tables" :key="t.table_name" :value="t.table_name">
+            {{ t.table_name }}{{ t.is_primary ? ' (primary)' : '' }}
+          </option>
+        </select>
+        <!-- Add another table to this session (secondary; the switcher then lists it). -->
+        <button
+          v-if="sessionUuid"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+          title="Add another table to this session"
+          :disabled="uploading"
+          @click="tableFileInput?.click()"
+        >
+          <Loader2 v-if="uploading" class="h-3.5 w-3.5 animate-spin text-primary" />
+          <Plus v-else class="h-3.5 w-3.5" />
+          Add table
+        </button>
+        <input
+          ref="tableFileInput"
+          type="file"
+          accept=".csv,.tsv,.parquet,.json,.xlsx"
+          class="hidden"
+          @change="onAddTableFile"
+        />
+        <span v-if="addError" class="max-w-[16rem] truncate text-xs text-ink-red" :title="addError">{{ addError }}</span>
+      </div>
       <div class="flex items-center gap-3">
         <span class="text-xs text-ink-gray-5">
           <template v-if="sessionUuid">

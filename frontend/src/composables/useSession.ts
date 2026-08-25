@@ -4,9 +4,10 @@
 // lives at module scope, so every useSession() call returns refs into the *same*
 // reactive object.
 import { reactive, toRefs } from 'vue'
-import type { ColumnMeta, TransformOp, HistoryStep } from '../types'
+import type { ColumnMeta, TransformOp, HistoryStep, SchemaTable } from '../types'
 import {
   createSession,
+  uploadTable,
   applyTransform,
   undoTransform,
   redoTransform,
@@ -21,6 +22,10 @@ interface SessionState {
   tableName: string | null
   fileName: string | null
   columns: ColumnMeta[]
+  // Every table loaded in this session (the primary plus any added via addTable);
+  // drives the multi-table switcher. `tableName` names which one is active. Per
+  // ADR-006 this is a *switcher* — the app acts on one table at a time, no joins.
+  tables: SchemaTable[]
   rowCount: number
   uploading: boolean
   applying: boolean
@@ -42,6 +47,7 @@ const state = reactive<SessionState>({
   tableName: null,
   fileName: null,
   columns: [],
+  tables: [],
   rowCount: 0,
   uploading: false,
   applying: false,
@@ -136,6 +142,7 @@ function resetSession(): void {
   state.tableName = null
   state.fileName = null
   state.columns = []
+  state.tables = []
   state.rowCount = 0
   state.error = null
   state.canUndo = false
@@ -156,6 +163,9 @@ async function upload(file: File): Promise<void> {
     state.fileName = file.name
     state.columns = info.columns
     state.rowCount = info.row_count
+    // Fresh session: exactly one (primary) table. The switcher list starts here and
+    // grows as addTable() adds more.
+    state.tables = [{ table_name: info.table_name, is_primary: true, columns: info.columns }]
     state.canUndo = false
     state.canRedo = false
     state.historySteps = []
@@ -194,11 +204,14 @@ async function syncAfterMutation(rowCount: number): Promise<void> {
   state.rowCount = rowCount
   try {
     const schema = await fetchSchema(uuid)
-    const primary =
-      schema.tables.find((t) => t.is_primary) ??
+    state.tables = schema.tables
+    // Keep the ACTIVE table's columns (prefer the switched-to table over primary), so a
+    // transform on a secondary table resyncs that table's schema — not primary's.
+    const active =
       schema.tables.find((t) => t.table_name === state.tableName) ??
+      schema.tables.find((t) => t.is_primary) ??
       schema.tables[0]
-    if (primary) state.columns = primary.columns
+    if (active) state.columns = active.columns
   } catch {
     // Non-fatal: keep the prior column list if the schema refresh fails.
   }
@@ -275,11 +288,13 @@ async function restoreSession(): Promise<void> {
   try {
     // Existence check + live column source in one call (404s cleanly if gone).
     const schema = await fetchSchema(stored.sessionUuid)
-    const primary =
-      schema.tables.find((t) => t.is_primary) ??
+    // Prefer the persisted ACTIVE table (so a refresh returns to the table you switched
+    // to, not primary); fall back to primary, then the first table.
+    const active =
       schema.tables.find((t) => t.table_name === stored.tableName) ??
+      schema.tables.find((t) => t.is_primary) ??
       schema.tables[0]
-    if (!primary) {
+    if (!active) {
       // Session resolved but has no tables — treat as gone.
       clearPersisted()
       return
@@ -294,9 +309,10 @@ async function restoreSession(): Promise<void> {
     }
     // Populate identity/columns BEFORE sessionUuid so every consumer that watches
     // sessionUuid (grid, quality panel, suggestions) sees a coherent session at once.
-    state.tableName = primary.table_name
+    state.tableName = active.table_name
     state.fileName = stored.fileName
-    state.columns = primary.columns
+    state.columns = active.columns
+    state.tables = schema.tables
     state.rowCount = rowCount
     state.sessionUuid = stored.sessionUuid
     // Re-persist in case the primary table name drifted from what was stored.
@@ -310,6 +326,58 @@ async function restoreSession(): Promise<void> {
   }
 }
 
+// --- Multi-table switching (TASK-039) --------------------------------------
+// Point the whole app (grid, data-prep, Canvas field lists, Query schema) at a
+// different already-loaded table in this session: set the active name + its live
+// columns and reload that table's undo/redo history. Deliberately does NOT bump
+// dataVersion — that signal means "the active table's rows/schema changed" and makes
+// ChartCanvas re-run every tile, so a table *switch* must not silently re-point
+// existing charts. The grid reloads via its own watch(tableName); Canvas/Query read
+// the new `columns` reactively for any NEW tiles/queries.
+function setActiveTable(name: string): void {
+  if (!state.sessionUuid || name === state.tableName) return
+  const t = state.tables.find((x) => x.table_name === name)
+  if (!t) return
+  state.tableName = t.table_name
+  state.columns = t.columns
+  persistSession()
+  void refreshHistory()
+}
+
+// Add another table to the current session (secondary; is_primary=false server-side),
+// then make it active. Re-reads the schema so the switcher lists the new table with its
+// live columns. Returns true on success; the error (e.g. duplicate table name, bad file)
+// is surfaced via state.error for the caller to show.
+async function addTable(file: File): Promise<boolean> {
+  const uuid = state.sessionUuid
+  if (!uuid || state.uploading) return false
+  state.uploading = true
+  state.error = null
+  try {
+    const resp = await uploadTable(uuid, file)
+    const schema = await fetchSchema(uuid)
+    state.tables = schema.tables
+    setActiveTable(resp.table_name)
+    return true
+  } catch (e) {
+    state.error = apiErrorMessage(e)
+    return false
+  } finally {
+    state.uploading = false
+  }
+}
+
 export function useSession() {
-  return { ...toRefs(state), upload, applyOp, undo, redo, refreshHistory, resetSession, restoreSession }
+  return {
+    ...toRefs(state),
+    upload,
+    addTable,
+    setActiveTable,
+    applyOp,
+    undo,
+    redo,
+    refreshHistory,
+    resetSession,
+    restoreSession,
+  }
 }

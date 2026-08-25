@@ -174,6 +174,17 @@ async def execute_query(session_uuid: str, payload: ExecuteRequest):
             detail="This query was rejected: only a single read-only SELECT is allowed.",
         )
 
+    # S-1 (TASK-029): read-only is necessary but NOT sufficient on the shared
+    # single-file DuckDB -- a bare SELECT can still read another tenant's table
+    # or a file (read_csv_auto/read_text). Enforce that this query touches ONLY
+    # this session's own tables and calls no filesystem/external function.
+    scope_reason = sql_validator.scope_violation(sql, session_uuid)
+    if scope_reason:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This query was rejected: it {scope_reason}.",
+        )
+
     # Strip a trailing ';' so the statement can be wrapped as a subquery. (Stacked
     # statements were already rejected by the validator; this only tidies a lone
     # trailing terminator so `SELECT ...;` still runs.)

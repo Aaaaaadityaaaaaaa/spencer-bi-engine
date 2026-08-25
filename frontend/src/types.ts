@@ -267,6 +267,15 @@ export interface SchemaResponse {
   tables: SchemaTable[]
 }
 
+// POST /sessions/{id}/tables response (TableUploadResponse) — a secondary table added
+// to an existing session (registered with is_primary=false server-side). Mirrors
+// backend TableUploadResponse; the switcher then lists it alongside the primary.
+export interface TableUploadResponse {
+  table_name: string
+  row_count: number
+  columns: ColumnMeta[]
+}
+
 // --- Canvas aggregation contract (Phase 5 / TASK-011) ---
 // Mirrors AggregateRequest / AggregateResponse in backend/models/schemas.py.
 // One shape serves both KPI cards (dimension omitted → a single scalar) and chart
@@ -341,6 +350,18 @@ export interface KpiConfig {
   // (green). Both optional ⇒ existing cards / saved dashboards are unaffected.
   target?: number | null
   targetMode?: KpiTargetMode
+  // TASK-031 (#14 part 2): optional temporal column to plot the metric over time as a
+  // sparkline. Frontend-only (never sent to the backend); the trend is the existing
+  // /aggregate with `dimension` set to this column. Optional ⇒ back-compatible.
+  trendDimension?: string | null
+  // TASK-033 (Power BI Canvas): per-tile presentation overrides, all frontend-only and
+  // all optional ⇒ existing cards / saved dashboards are unaffected.
+  title?: string | null // overrides the auto "Sum of revenue"; null/blank ⇒ auto
+  accent?: string | null // sparkline accent colour (hex/oklch); null ⇒ brand primary
+  hideControls?: boolean // "clean" mode: hide the editor affordances, keep title+value+spark
+  // TASK-036 (Power BI Canvas, part 4): more per-tile presentation, all optional/back-compat.
+  bg?: string | null // card background fill (hex/oklch); null/absent ⇒ default surface
+  bold?: boolean // bold the title AND the big value
 }
 
 /** Whether meeting-or-beating the target is good (revenue) or bad (cost/error rate). */
@@ -354,6 +375,16 @@ export interface ChartConfig {
   measure: string | null
   aggregation: Aggregation
   chartType: ChartType
+  // TASK-033 (Power BI Canvas): per-tile presentation overrides, all frontend-only and
+  // all optional ⇒ existing tiles / saved dashboards render exactly as before.
+  title?: string | null // overrides the auto "Sum of revenue by region"; null/blank ⇒ auto
+  color?: string | null // single-series accent (hex/oklch); a breakdown keeps the categorical palette
+  showValues?: boolean // draw value/count data labels on the plot
+  hideControls?: boolean // "clean" mode: hide the control strip, keep the title + plot
+  // TASK-036 (Power BI Canvas, part 4): more per-tile presentation, all optional/back-compat.
+  bg?: string | null // card background fill (hex/oklch); null/absent ⇒ default surface
+  bold?: boolean // bold the title
+  topN?: number | null // cap grouped categories to the top-N by measure; null/absent ⇒ server default (top-50, value DESC)
 }
 
 /** Per-tile fetch state, owned by ChartCanvas and passed down to the tiles. */
@@ -363,19 +394,77 @@ export interface TileState<T> {
   data: T | null
 }
 
-// --- Dashboard persistence + templates (TASK-026 / Wave 6) ---
-// A dashboard reduces to its tile CONFIGS (KPI + chart specs) — no fetch state, no data.
-// That snapshot is what a template produces, what "Save" stores, and what "Load" restores;
-// ChartCanvas re-runs every aggregation from it. Persisted client-side in localStorage
-// (single-user app), mirroring the saved-queries store.
-export interface DashboardSnapshot {
+// --- Canvas grid + pages (TASK-034, Power BI Canvas) ---
+// A chart tile keeps its numeric id alongside its config (the id lives on the wrapper so
+// tiles can be added/removed and their fetch state keyed independently). This is the shape
+// ChartCanvas works with in memory AND the shape persisted per-page below.
+export interface PersistedChartEntry {
+  id: number
+  config: ChartConfig
+}
+
+// One tile's position + size on the freeform grid. `i` is the COMPOSITE tile id
+// ("kpi:<id>" / "chart:<id>") — see utils/dashboardLayout. x/y/w/h are grid units
+// (GRID_COLS-wide columns; h/w in row-height steps), exactly what grid-layout-plus stores.
+export interface TileLayout {
+  i: string
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+// One Canvas page: a named set of tiles + their grid layout. KPIs and charts share the one
+// `layout` (a unified drag/resize surface). A dashboard is an ordered list of these pages.
+export interface DashboardPage {
+  id: string
+  name: string
   kpis: KpiConfig[]
-  charts: ChartConfig[]
+  charts: PersistedChartEntry[]
+  layout: TileLayout[]
+}
+
+// --- Dashboard persistence + templates (TASK-026 / Wave 6, multi-page since TASK-034) ---
+// A dashboard reduces to its PAGES (each a set of tile configs + their layout) — no fetch
+// state, no data. That snapshot is what a template produces, what "Save" stores, and what
+// "Load" restores; ChartCanvas re-runs every aggregation from it. Persisted client-side in
+// localStorage (single-user app), mirroring the saved-queries store. `activePageId` records
+// which page was in front when saved, so a load restores the same view.
+export interface DashboardSnapshot {
+  pages: DashboardPage[]
+  activePageId: string
 }
 export interface SavedDashboard extends DashboardSnapshot {
   id: string
   name: string
   savedAt: string // ISO timestamp
+}
+
+// --- Live board auto-persistence (TASK-033 "persist immediately"; multi-page since TASK-034) ---
+// Distinct from SavedDashboard (a named, explicit save): this is the ONE live board the
+// user is actively working on, snapshotted to localStorage on every edit so a reload
+// restores it. Keyed per user; tied to the dataset `sessionUuid` so a different dataset
+// seeds fresh rather than showing a stale board.
+//
+// v1 (TASK-033) was single-page: `{ snapshot: { kpis, charts } }`, no layout. v2 (TASK-034)
+// is multi-page with per-page layout. useActiveDashboard reads either and UPGRADES a v1 blob
+// on read — wrapping its single {kpis,charts} into one "Page 1" with a generated flow layout
+// — so a board saved before the grid upgrade survives it. The v1 types are retained purely
+// for that upgrade path.
+export interface ActiveDashboardSnapshot {
+  kpis: KpiConfig[]
+  charts: PersistedChartEntry[]
+}
+export interface ActiveDashboardBlobV1 {
+  v: 1
+  sessionUuid: string
+  snapshot: ActiveDashboardSnapshot
+}
+export interface ActiveDashboardBlobV2 {
+  v: 2
+  sessionUuid: string
+  pages: DashboardPage[]
+  activePageId: string
 }
 
 // --- Query Engine contract (Phase 6 / TASK-012) ---

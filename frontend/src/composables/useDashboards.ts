@@ -1,11 +1,12 @@
-// Saved dashboards, persisted in localStorage (TASK-026 / Wave 6, feature #15).
+// Saved dashboards, persisted in localStorage (TASK-026 / Wave 6, feature #15; multi-page
+// since TASK-034, wired into the Canvas by TASK-035).
 //
-// A "dashboard" is just the set of tile CONFIGS on the Canvas (KPI + chart specs) --
-// no fetched data, no per-tile loading state. Saving snapshots those configs; loading
-// hands them back to ChartCanvas, which re-runs every aggregation against whatever
-// dataset is currently loaded. That decoupling is deliberate: a saved layout is
-// portable across dataset re-uploads (as long as the column names still exist), exactly
-// like a saved SQL query in useQueryHistory.
+// A "dashboard" is just the set of PAGES on the Canvas -- each a set of tile CONFIGS
+// (KPI + chart specs) plus their grid layout -- no fetched data, no per-tile loading
+// state. Saving snapshots those configs; loading hands them back to ChartCanvas, which
+// re-runs every aggregation against whatever dataset is currently loaded. That decoupling
+// is deliberate: a saved layout is portable across dataset re-uploads (as long as the
+// column names still exist), exactly like a saved SQL query in useQueryHistory.
 //
 // Same shape as useQueryHistory on purpose: a module-scoped reactive singleton, tolerant
 // load, swallow-on-quota persist, `${Date.now()}-${counter}` ids. Client-side only --
@@ -27,14 +28,32 @@ function k(base: string): string {
   return currentUserId ? `${base}:${currentUserId}` : base
 }
 
-// Load a persisted array, tolerating absent/corrupt/rejected storage (private mode,
-// hand-edited values) by starting clean rather than throwing at import time.
-function loadArray<T>(key: string): T[] {
+// A saved row is trusted only if it carries the multi-page shape (id/name/savedAt + a
+// `pages` array + activePageId). The store was reshaped single-page → multi-page in
+// TASK-034 while orphaned (wired into no UI), so no real single-page rows were ever
+// written to disk — a shape-mismatched row is therefore treated as corrupt and dropped,
+// not migrated. This keeps loadDashboard from handing the Canvas a page-less snapshot.
+function isValidSaved(row: unknown): row is SavedDashboard {
+  if (!row || typeof row !== 'object') return false
+  const r = row as Record<string, unknown>
+  return (
+    typeof r.id === 'string' &&
+    typeof r.name === 'string' &&
+    typeof r.savedAt === 'string' &&
+    Array.isArray(r.pages) &&
+    typeof r.activePageId === 'string'
+  )
+}
+
+// Load the persisted list, tolerating absent/corrupt/rejected storage (private mode,
+// hand-edited values) by starting clean rather than throwing at import time; shape-invalid
+// rows are filtered out (see isValidSaved).
+function loadArray(key: string): SavedDashboard[] {
   if (typeof localStorage === 'undefined') return []
   try {
     const raw = localStorage.getItem(key)
     const parsed = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? (parsed as T[]) : []
+    return Array.isArray(parsed) ? parsed.filter(isValidSaved) : []
   } catch {
     return []
   }
@@ -51,7 +70,7 @@ const state = reactive<DashboardState>({
 // disk so a re-login restores them.
 export function loadForUser(userId: string | null): void {
   currentUserId = userId
-  state.dashboards = userId ? loadArray<SavedDashboard>(k(SAVED_KEY)) : []
+  state.dashboards = userId ? loadArray(k(SAVED_KEY)) : []
 }
 
 function persist(key: string, value: unknown): void {
@@ -73,9 +92,10 @@ function makeId(): string {
 // Deep-copy a snapshot so the stored value is severed from the live reactive Canvas
 // arrays -- otherwise a later tile edit would silently mutate the "saved" dashboard,
 // and re-loading would hand back proxies that alias the current tiles. JSON round-trip
-// is sufficient: configs are plain data (strings/numbers/null), no functions or dates.
+// is sufficient: pages/configs/layouts are plain data (strings/numbers/null), no
+// functions or dates.
 function cloneSnapshot(snapshot: DashboardSnapshot): DashboardSnapshot {
-  return JSON.parse(JSON.stringify({ kpis: snapshot.kpis, charts: snapshot.charts }))
+  return JSON.parse(JSON.stringify({ pages: snapshot.pages, activePageId: snapshot.activePageId }))
 }
 
 // Save the current Canvas as a new named dashboard (newest first). No-op on a blank
@@ -88,15 +108,15 @@ function saveDashboard(name: string, snapshot: DashboardSnapshot): SavedDashboar
     id: makeId(),
     name: clean,
     savedAt: new Date().toISOString(),
-    kpis: copy.kpis,
-    charts: copy.charts,
+    pages: copy.pages,
+    activePageId: copy.activePageId,
   }
   state.dashboards = [row, ...state.dashboards]
   persist(k(SAVED_KEY), state.dashboards)
   return row
 }
 
-// Return a fresh deep copy of a saved dashboard's configs (or null if the id is gone),
+// Return a fresh deep copy of a saved dashboard's pages (or null if the id is gone),
 // so the caller can seed the Canvas without aliasing the stored record.
 function loadDashboard(id: string): DashboardSnapshot | null {
   const found = state.dashboards.find((d) => d.id === id)

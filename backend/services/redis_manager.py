@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 import redis
 import fakeredis
 
+import config
+
 logger = logging.getLogger("spencer.redis")
 
 
@@ -54,6 +56,18 @@ class RedisManager:
             self.server_version = server_ver
             logger.info("RedisManager connected to real redis %s at %s:%s", server_ver, host, port)
         except Exception as exc:  # ConnectionError, timeout, ResponseError, etc.
+            # S-2 (TASK-029): in production, do NOT silently fall back to the empty
+            # in-memory fakeredis. Redis holds the session liveness markers the
+            # cleanup sweeper trusts; booting on an empty store would make the first
+            # sweep treat every live session as dead and delete all tenant data.
+            # Fail hard so the deploy is fixed before any data is ever at risk.
+            if config.IS_PRODUCTION:
+                raise RuntimeError(
+                    f"Refusing to start: SPENCER_ENV=production but Redis is unreachable at "
+                    f"{host}:{port} ({type(exc).__name__}: {exc}). Redis is required in "
+                    f"production (it holds session liveness the sweeper trusts). Start Redis "
+                    f"or fix REDIS_HOST/REDIS_PORT."
+                ) from exc
             self.client = fakeredis.FakeRedis(decode_responses=True)
             self.server_version = None
             logger.warning("RedisManager falling back to fakeredis (%s: %s)", type(exc).__name__, exc)

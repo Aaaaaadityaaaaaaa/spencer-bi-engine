@@ -12,6 +12,7 @@ import type {
   TransformPreviewResponse,
   HistoryResponse,
   SchemaResponse,
+  TableUploadResponse,
   AggregateRequest,
   AggregateResponse,
   ColumnProfile,
@@ -98,6 +99,17 @@ export async function createSession(file: File): Promise<SessionInfo> {
   const form = new FormData()
   form.append('file', file)
   const { data } = await http.post<SessionInfo>('/sessions', form)
+  return data
+}
+
+// POST /sessions/{id}/tables -- add a SECOND (or further) table to an existing session.
+// Multipart; the form field MUST be named `file` (matches upload_table). The table is
+// registered with is_primary=false, so the session then holds multiple tables the user
+// can switch between (ADR-006: switcher only, no cross-table joins).
+export async function uploadTable(sessionUuid: string, file: File): Promise<TableUploadResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await http.post<TableUploadResponse>(`/sessions/${sessionUuid}/tables`, form)
   return data
 }
 

@@ -21,6 +21,7 @@ import {
 } from '../services/api'
 import { loadForUser as loadQueryHistoryForUser } from './useQueryHistory'
 import { loadForUser as loadDashboardsForUser } from './useDashboards'
+import { loadForUser as loadActiveDashboardForUser } from './useActiveDashboard'
 import { useSession } from './useSession'
 
 const PERSIST_KEY = 'spencer.auth.v1'
@@ -76,6 +77,7 @@ function readPersisted(): PersistedAuth | null {
 function applyUserScope(userId: string | null): void {
   loadQueryHistoryForUser(userId)
   loadDashboardsForUser(userId)
+  loadActiveDashboardForUser(userId)
 }
 
 // Adopt a fresh (token, user): update state, the Axios token, persistence, and the

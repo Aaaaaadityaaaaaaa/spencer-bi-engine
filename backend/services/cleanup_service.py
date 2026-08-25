@@ -61,6 +61,19 @@ async def sweep() -> dict:
         "dirs_removed": 0,
         "bytes_estimated": 0,
     }
+
+    # S-2 (TASK-029): the sweep decides a session is dead from the ABSENCE of its
+    # Redis liveness marker. If we are not on the real Redis in production, that
+    # absence is meaningless (the in-memory fallback is simply empty), so reaping
+    # would delete every tenant's data. Refuse to sweep on an untrusted store.
+    if config.IS_PRODUCTION and redis_manager.backend != "redis":
+        logger.error(
+            "cleanup sweep SKIPPED: Redis backend is %r, not real 'redis' -- refusing to "
+            "reap on an untrusted liveness store (would risk deleting live tenant data)",
+            redis_manager.backend,
+        )
+        return result
+
     uploads_root = config.UPLOADS_DIR
     if not os.path.isdir(uploads_root):
         return result
@@ -222,6 +235,11 @@ async def sweep_loop():
         config.SESSION_TTL_HOURS,
     )
     while True:
+        # Sleep FIRST (S-2, TASK-029): do not sweep the instant the process boots.
+        # A transient Redis lag at startup could otherwise drop us to the empty
+        # fallback and have the very first sweep reap live data seconds later.
+        # Waiting one interval lets Redis settle (and lets ops intervene).
+        await asyncio.sleep(config.SWEEP_INTERVAL_SECONDS)
         try:
             counts = await sweep()
             if counts["sessions_reaped"]:
@@ -230,4 +248,3 @@ async def sweep_loop():
             raise
         except Exception:
             logger.exception("cleanup sweep failed; retrying next interval")
-        await asyncio.sleep(config.SWEEP_INTERVAL_SECONDS)
