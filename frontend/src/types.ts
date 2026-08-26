@@ -48,6 +48,9 @@ export interface DataResponse {
   // TASK-022: whole-table [min, max] per numeric column, for the grid's heatmap
   // colour scale. Present only on the first window (offset 0); the grid caches it.
   ranges?: Record<string, [number, number]>
+  // TASK-041 #5: the DuckDB rowid for each row in `rows` (parallel array), so the grid
+  // can address an exact cell for in-cell editing. Present on every window.
+  rowids?: number[]
 }
 
 // --- In-grid view controls (TASK-022) ---
@@ -98,6 +101,9 @@ export interface ImputeNullOp {
   column: string
   strategy: ImputeStrategy
   fill_value?: unknown
+  // TASK-041 #4: round a computed mean/median fill to this many decimal places
+  // (ignored for zero/mode/custom). Omitted ⇒ no rounding (raw mean/median).
+  decimals?: number
 }
 export interface CastOp {
   op: 'cast'
@@ -140,6 +146,9 @@ export interface StringNormalizeOp {
   // `pad_*` left/right-pads to `pad_length` with a single `pad_char`.
   regex?: boolean
   strip_special?: boolean
+  // TASK-041 #3/#6: collapse internal runs of whitespace to a single space and trim
+  // the ends — merges spacing variants ("u . p . i" vs "u.p.i"). Runs after strip_special.
+  collapse_whitespace?: boolean
   pad_side?: PadSide
   pad_length?: number
   pad_char?: string
@@ -188,6 +197,22 @@ export interface FlagOutliersOp {
   method: OutlierMethod
   threshold: number
 }
+// TASK-041 #5: in-cell edit — set ONE cell (identified by its stable DuckDB rowid) to a
+// new value. `value` omitted/undefined clears to NULL; otherwise the backend CASTs the
+// string to the column's type in compiled SQL (a value that can't parse fails as a 400).
+export interface UpdateCellOp {
+  op: 'update_cell'
+  column: string
+  rowid: number
+  value?: unknown
+}
+
+// TASK-042: replace a numeric column with its absolute value IN PLACE (drop the negative
+// sign) — the "make positive" alternative to dropping rows on the negative-values finding.
+export interface AbsoluteValueOp {
+  op: 'absolute_value'
+  column: string
+}
 
 export type TransformOp =
   | DedupeOp
@@ -205,6 +230,8 @@ export type TransformOp =
   | FillDownOp
   | FlagOutliersOp
   | FilterRowsOp
+  | UpdateCellOp
+  | AbsoluteValueOp
 
 // The discriminator value alone (e.g. 'drop_null'), handy for menus + dispatch.
 export type OpKind = TransformOp['op']
@@ -213,11 +240,14 @@ export type OpKind = TransformOp['op']
 // column (the per-column ⋮ header menu sets `column`; ribbon buttons leave it unset
 // so the dialog shows a column picker). A Fix from the quality panel may also
 // pre-seed cast specifics (`coerce`, `newType`) so it's genuinely one click (TASK-017).
+// `seed` (TASK-041 #2/#3/#6) carries a finding's `suggested_params` verbatim — snake_case
+// op-field keys the dialog maps onto its form so newer fixes open ready to apply.
 export interface OpRequest {
   op: OpKind
   column?: string
   coerce?: boolean
   newType?: string
+  seed?: Record<string, unknown>
 }
 
 // apply / undo / redo all return this (TransformResponse in the backend).
@@ -597,6 +627,16 @@ export interface ColumnProfile {
   compiled_sql: string
 }
 
+// GET /sessions/{id}/column/values — distinct values of one column, most-frequent first,
+// for the find/replace dropdown in the cleaning dialog (TASK-042). `truncated` ⇒ the
+// column has more distinct values than returned (the UI keeps free-text entry).
+export interface ColumnValues {
+  column: string
+  values: (string | number | boolean | null)[]
+  distinct: number
+  truncated: boolean
+}
+
 // --- Data-quality panel contract (Table data-prep / TASK-016) ---
 // Mirrors QualityReport / QualityFinding in backend/models/schemas.py. snake_case
 // matches the wire. Every number is computed server-side over the WHOLE table.
@@ -618,6 +658,10 @@ export type QualityCode =
   | 'mixed_date_format'
   | 'negative_values'
   | 'future_date'
+  // TASK-041: sub-threshold missingness (survives a cast, #8) + punctuation/spacing
+  // variants of the same category ('u.p.i' vs 'upi', #3/#6)
+  | 'partial_null'
+  | 'inconsistent_values'
 
 /** One detected issue. `column` is null for table-level findings (duplicate rows).
  *  `suggested_op` is the OpKind the one-click Fix opens in OpDialog (null ⇒ no Fix,
@@ -631,6 +675,14 @@ export interface QualityFinding {
   column: string | null
   metric: number | null
   suggested_op: OpKind | null
+  // TASK-041 #2/#3/#6: pre-filled op params for the one-click Fix, passed through to the
+  // OpDialog form as an OpRequest `seed` (snake_case op-field keys). Absent ⇒ the Fix
+  // opens with only the op + column pre-scoped.
+  suggested_params?: Record<string, unknown>
+  // TASK-042: an OPTIONAL second fix for the same finding (e.g. negative_values also
+  // offers "make positive" → absolute_value). Absent ⇒ only the primary Fix is shown.
+  alt_op?: OpKind | null
+  alt_params?: Record<string, unknown>
 }
 
 // GET /sessions/{id}/quality response. `ok` is true when no findings survived;

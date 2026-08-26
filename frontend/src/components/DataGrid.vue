@@ -9,6 +9,7 @@ import { useSession } from '../composables/useSession'
 import { fetchData, exportTable, apiErrorMessage, blobErrorMessage } from '../services/api'
 import type { ExportFormat } from '../services/api'
 import { downloadBlob, exportFilename } from '../utils/csvExport'
+import { friendlyTableName } from '../utils/tableName'
 import type { DataColumn, OpKind, OpRequest, SortSpec } from '../types'
 
 // Window size for one fetch: matches the backend's default `limit` and is the
@@ -17,7 +18,7 @@ const PAGE = 500
 const ROW_H = 36   // px; fixed row height -> no per-row measurement needed
 const COL_W = 160  // px; fixed column width -> header/body columns stay aligned
 
-const { sessionUuid, tableName, fileName, dataVersion, tables, uploading, error, setActiveTable, addTable } = useSession()
+const { sessionUuid, tableName, fileName, dataVersion, tables, uploading, error, setActiveTable, addTable, updateCell } = useSession()
 
 // Multi-table switcher (TASK-039): a hidden file input backs the "Add table" button;
 // addError surfaces an add failure (e.g. a duplicate table name) inline in the toolbar,
@@ -57,8 +58,12 @@ const COLUMN_OPS: { op: OpKind; label: string }[] = [
 
 // Which column's menu is open, and where to anchor it. The menu is position:fixed
 // (computed from the button rect) so the grid's overflow-auto can't clip it.
+// TASK-042: the anchor also carries a dynamic max-height and an up/down flag so the menu
+// is capped to the space actually available from the button (not a flat 70vh measured from
+// the viewport top, which let a low button's menu run off the bottom edge WITHOUT ever
+// triggering its own scrollbar). It flips upward when there's more room above.
 const menuCol = ref<string | null>(null)
-const menuPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+const menuPos = ref<{ x: number; y: number; maxH: number; up: boolean }>({ x: 0, y: 0, maxH: 320, up: false })
 
 function toggleMenu(col: string, e: MouseEvent): void {
   if (menuCol.value === col) {
@@ -66,9 +71,37 @@ function toggleMenu(col: string, e: MouseEvent): void {
     return
   }
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  menuPos.value = { x: r.right, y: r.bottom }
+  const margin = 8 // keep the menu clear of the very screen edge
+  const gap = 4 // small offset between the button and the menu
+  const spaceBelow = window.innerHeight - r.bottom - margin
+  const spaceAbove = r.top - margin
+  // Open upward only when the menu won't reasonably fit below AND there's more room above.
+  const up = spaceBelow < 220 && spaceAbove > spaceBelow
+  const maxH = Math.max(160, (up ? spaceAbove : spaceBelow) - gap)
+  menuPos.value = {
+    x: r.right,
+    // `y` is the CSS offset for the chosen edge: for a downward menu it's the top
+    // (button bottom + gap); for an upward one it's the bottom, measured from the
+    // viewport bottom up to just above the button's top.
+    y: up ? window.innerHeight - r.top + gap : r.bottom + gap,
+    maxH,
+    up,
+  }
   menuCol.value = col
 }
+
+// Inline style for the column ⋮ menu: pin to top OR bottom depending on the flip, cap the
+// height to the measured space (so overflow-y-auto actually scrolls), and keep the
+// right-aligned translate. Kept as a computed for readability over an inline expression.
+const menuStyle = computed<Record<string, string>>(() => {
+  const p = menuPos.value
+  return {
+    [p.up ? 'bottom' : 'top']: p.y + 'px',
+    left: p.x + 'px',
+    maxHeight: p.maxH + 'px',
+    transform: 'translateX(-100%)',
+  }
+})
 
 function chooseOp(op: OpKind): void {
   const col = menuCol.value
@@ -90,6 +123,67 @@ const total = ref(0)
 const loading = ref(false)
 const gridError = ref<string | null>(null)
 const scrollEl = ref<HTMLDivElement | null>(null)
+
+// #5 in-cell edit: a parallel array of the stable DuckDB rowid for each loaded row,
+// filled from /data in lockstep with `rows` (same order, same offset/concat), so
+// rowids[i] addresses rows[i]. It's the anchor the update_cell transform uses to hit
+// exactly one cell. `editing` tracks which cell (by row index + column) is open, and
+// `editValue` is the text box's working value.
+const rowids = ref<number[]>([])
+const editing = ref<{ index: number; col: string } | null>(null)
+const editValue = ref('')
+const editInput = ref<HTMLInputElement | HTMLInputElement[] | null>(null)
+
+function isEditing(index: number, col: string): boolean {
+  return editing.value?.index === index && editing.value?.col === col
+}
+function focusEditInput(): void {
+  void nextTick(() => {
+    const el = editInput.value
+    const input = Array.isArray(el) ? el[0] : el
+    input?.focus()
+    input?.select()
+  })
+}
+function startEdit(index: number, col: string): void {
+  // Need a stable rowid to address the cell; if the window didn't carry one, skip.
+  if (rowids.value[index] === undefined) return
+  const raw = rows.value[index]?.[col]
+  editValue.value = raw === null || raw === undefined ? '' : String(raw)
+  editing.value = { index, col }
+  focusEditInput()
+}
+function cancelEdit(): void {
+  editing.value = null
+  editValue.value = ''
+}
+async function commitEdit(): Promise<void> {
+  const target = editing.value
+  if (!target) return
+  const { index, col } = target
+  editing.value = null // close the editor immediately (optimistic)
+  const rid = rowids.value[index]
+  const row = rows.value[index]
+  if (rid === undefined || !row) return
+  const prev = row[col]
+  // Empty box clears the cell to NULL; otherwise send the raw text (the backend CASTs
+  // it to the column's own type and fails closed if it can't parse).
+  const text = editValue.value
+  const value: unknown = text === '' ? null : text
+  const display = text === '' ? null : text
+  // No-op guard: nothing to persist if the value is unchanged.
+  const prevText = prev === null || prev === undefined ? '' : String(prev)
+  if (text === prevText) return
+  // Optimistic patch so the edit shows instantly (no full reload). Replace the row
+  // object so the virtualized cell re-renders.
+  rows.value[index] = { ...row, [col]: display }
+  const ok = await updateCell(col, rid, value)
+  if (!ok) {
+    // Roll back and surface the reason (e.g. value can't cast to the column type).
+    rows.value[index] = { ...rows.value[index], [col]: prev }
+    gridError.value = error.value ?? 'Could not update the cell.'
+  }
+}
 
 // Generation token: every full reset (session switch, transform, sort/search
 // change) bumps this. A window fetch captures the token at launch and discards
@@ -400,6 +494,7 @@ async function loadWindow(offset: number): Promise<void> {
     if (offset === 0) {
       columns.value = res.columns
       rows.value = res.rows
+      rowids.value = res.rowids ?? []
       // Heatmap scale: whole-table ranges arrive only on the first window; cache
       // them (left unfiltered server-side so the scale stays stable under search).
       ranges.value = res.ranges ?? {}
@@ -411,6 +506,7 @@ async function loadWindow(offset: number): Promise<void> {
       colOrder.value = [...kept, ...added]
     } else {
       rows.value = rows.value.concat(res.rows)
+      rowids.value = rowids.value.concat(res.rowids ?? [])
     }
     total.value = res.total
   } catch (e) {
@@ -427,6 +523,8 @@ function reloadFromTop(): void {
   if (!sessionUuid.value) return
   reqGen.value++
   rows.value = []
+  rowids.value = []
+  cancelEdit()
   total.value = 0
   gridError.value = null
   loading.value = false
@@ -486,6 +584,8 @@ watch(
   sessionUuid,
   (uuid) => {
     rows.value = []
+    rowids.value = []
+    cancelEdit()
     columns.value = []
     total.value = 0
     gridError.value = null
@@ -568,7 +668,7 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
           @change="setActiveTable(($event.target as HTMLSelectElement).value)"
         >
           <option v-for="t in tables" :key="t.table_name" :value="t.table_name">
-            {{ t.table_name }}{{ t.is_primary ? ' (primary)' : '' }}
+            {{ friendlyTableName(t.table_name) }}{{ t.is_primary ? ' (primary)' : '' }}
           </option>
         </select>
         <!-- Add another table to this session (secondary; the switcher then lists it). -->
@@ -750,12 +850,25 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
             <div
               v-for="meta in displayCols"
               :key="meta.col.name"
-              class="shrink-0 truncate px-3 py-2 text-xs text-ink-gray-8"
-              :class="meta.pinned ? 'z-[5] bg-surface-base' : ''"
+              class="relative shrink-0 truncate px-3 py-2 text-xs text-ink-gray-8"
+              :class="[meta.pinned ? 'z-[5] bg-surface-base' : '', isEditing(vRow.index, meta.col.name) ? '' : 'cursor-text']"
               :style="bodyCellStyle(meta, rows[vRow.index])"
-              :title="cell(rows[vRow.index], meta.col.name)"
+              :title="isEditing(vRow.index, meta.col.name) ? '' : cell(rows[vRow.index], meta.col.name)"
+              @dblclick="startEdit(vRow.index, meta.col.name)"
             >
-              {{ cell(rows[vRow.index], meta.col.name) }}
+              <input
+                v-if="isEditing(vRow.index, meta.col.name)"
+                ref="editInput"
+                v-model="editValue"
+                type="text"
+                class="absolute inset-0 z-10 w-full border border-primary bg-surface-base px-3 text-xs text-ink-gray-9 focus:outline-none"
+                @keydown.enter.prevent="commitEdit"
+                @keydown.esc.prevent="cancelEdit"
+                @blur="commitEdit"
+                @click.stop
+                @dblclick.stop
+              />
+              <template v-else>{{ cell(rows[vRow.index], meta.col.name) }}</template>
             </div>
           </div>
         </div>
@@ -767,8 +880,8 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
     <div v-if="menuCol" class="fixed inset-0 z-40" @click="menuCol = null"></div>
     <div
       v-if="menuCol"
-      class="fixed z-50 w-52 overflow-hidden rounded-3 border border-outline-gray-1 bg-surface-base py-1 shadow-md"
-      :style="{ top: menuPos.y + 4 + 'px', left: menuPos.x + 'px', transform: 'translateX(-100%)' }"
+      class="fixed z-50 w-52 overflow-y-auto rounded-3 border border-outline-gray-1 bg-surface-base py-1 shadow-md"
+      :style="menuStyle"
     >
       <div class="truncate px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-ink-gray-4">
         {{ menuCol }}

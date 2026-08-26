@@ -16,6 +16,7 @@ import type {
   AggregateRequest,
   AggregateResponse,
   ColumnProfile,
+  ColumnValues,
   QualityReport,
   AskResponse,
   AskTurn,
@@ -280,6 +281,22 @@ export async function fetchColumnProfile(
   return data
 }
 
+// GET /sessions/{id}/column/values?column -- distinct values of one column, most-frequent
+// first, for the find/replace dropdown in the cleaning dialog (TASK-042). Read-only;
+// Ibis-compiled from the validated column name (ADR-012). Bounded (`truncated` when the
+// column has more distinct values than returned).
+export async function fetchColumnValues(
+  sessionUuid: string,
+  column: string,
+  tableName?: string,
+): Promise<ColumnValues> {
+  const { data } = await http.get<ColumnValues>(
+    `/sessions/${sessionUuid}/column/values`,
+    { params: { column, ...tableParam(tableName) } },
+  )
+  return data
+}
+
 // GET /sessions/{id}/quality?table_name -- whole-table data-quality scan (ranked
 // findings, each with an optional one-click Fix). Read-only; no column input from the
 // client -- the backend enumerates columns from the live schema and Ibis-compiles the
@@ -385,6 +402,23 @@ export async function executeSql(
   const { data } = await http.post<ExecuteResultResponse>(
     `/sessions/${sessionUuid}/execute`,
     { sql },
+  )
+  return data
+}
+
+// POST /sessions/{id}/materialize -- persist a reviewed SELECT's result as a real,
+// reusable session table (#23). Same server-side defense as /execute (validate +
+// tenant-scope), but the result is CREATE TABLE'd (not rolled back), so it can become a
+// new working table or the base for a Canvas chart. Returns the new table exactly like
+// uploadTable; a 409 means the chosen name already exists in this session.
+export async function materializeQuery(
+  sessionUuid: string,
+  sql: string,
+  name?: string | null,
+): Promise<TableUploadResponse> {
+  const { data } = await http.post<TableUploadResponse>(
+    `/sessions/${sessionUuid}/materialize`,
+    { sql, name: name ?? null },
   )
   return data
 }

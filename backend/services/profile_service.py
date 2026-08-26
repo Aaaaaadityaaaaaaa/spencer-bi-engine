@@ -39,6 +39,12 @@ TOP_N = 20
 # Fixed bin count for the numeric histogram. A constant so bin math is predictable
 # and the response size is bounded regardless of the column's range/cardinality.
 HIST_BINS = 10
+# Cap for the find/replace value dropdown (TASK-042). Higher than TOP_N -- the dropdown
+# wants "all" the values of a normal categorical column -- but still bounded so a
+# high-cardinality column can't return a huge payload (the UI shows `truncated` and
+# keeps free-text entry). The query fetches CAP+1 to detect truncation without a
+# second COUNT(DISTINCT).
+VALUES_CAP = 500
 
 
 class ProfileError(Exception):
@@ -184,3 +190,40 @@ async def profile_column(table_name: str, column: str) -> Dict[str, Any]:
     result["compiled_sql"] = ";\n\n".join(sqls)
     logger.debug("profile %s.%s (%s)", table_name, column, kind)
     return result
+
+
+async def distinct_values(table_name: str, column: str, limit: int = VALUES_CAP) -> Dict[str, Any]:
+    """Distinct non-null values of one column, most-frequent first, for the cleaning
+    dialog's find/replace dropdown (TASK-042). Bounded by `limit` (clamped to VALUES_CAP);
+    `truncated` is True when the column has MORE distinct values than returned. Same
+    read-only, Ibis-compiled path as ``profile_column``: the column name is validated
+    against the LIVE schema and no client value is interpolated into SQL (ADR-012).
+    Raises ProfileError (-> 400) for an unknown column."""
+    columns = await _columns_of(table_name)  # fresh schema, never cached
+    if not columns:
+        raise ProfileError(f"table '{table_name}' has no columns or does not exist")
+    coltypes = {name: dtype for name, dtype in columns}
+    if column not in coltypes:
+        raise ProfileError(f"column '{column}' not found")
+
+    cap = max(1, min(int(limit or VALUES_CAP), VALUES_CAP))
+    t = _unbound(table_name, columns)
+    col = t[column]
+    tf = t.filter(col.notnull())
+    grouped = tf.group_by(column).aggregate(count=tf.count())
+    # Frequency DESC, group key as a stable ASC tiebreak (deterministic order for equal
+    # counts). Fetch cap+1 rows so we can tell there were MORE than `cap` without a
+    # separate distinct-count query.
+    ordered = grouped.order_by([grouped["count"].desc(), grouped[column]])
+    vexpr = ordered.limit(cap + 1)
+    vsql = ibis.to_sql(vexpr, dialect="duckdb")
+    vrows = await db_manager.run_readwrite(vsql) or []
+    truncated = len(vrows) > cap
+    rows = vrows[:cap]
+    logger.debug("distinct_values %s.%s -> %d (truncated=%s)", table_name, column, len(rows), truncated)
+    return {
+        "column": column,
+        "values": [_jsonable(r[0]) for r in rows],
+        "distinct": len(rows),
+        "truncated": truncated,
+    }

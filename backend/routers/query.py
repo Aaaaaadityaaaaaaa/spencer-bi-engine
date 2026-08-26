@@ -7,6 +7,7 @@ from models.schemas import (
     AggregateRequest,
     AggregateResponse,
     ColumnProfile,
+    ColumnValues,
     QualityReport,
     ExportRowsRequest,
 )
@@ -130,10 +131,15 @@ async def get_data(
     order_terms.append("rowid")  # stable tiebreak / pagination anchor
     order_sql = " ORDER BY " + ", ".join(order_terms)
 
+    # SELECT rowid alongside the row so the grid can address an exact cell for
+    # in-cell editing (TASK-041 #5). rowid is a base-table pseudocolumn absent from
+    # SELECT * / DESCRIBE, so `names` still describes only the real columns; the
+    # rowid rides in column 0 and is split back out into a parallel array below.
     raw = await db_manager.run_readwrite(
-        f"SELECT * FROM {qtable}{where_sql}{order_sql} LIMIT {lim} OFFSET {off}", params
+        f"SELECT rowid, * FROM {qtable}{where_sql}{order_sql} LIMIT {lim} OFFSET {off}", params
     )
-    rows = [dict(zip(names, r)) for r in (raw or [])]
+    rowids = [int(r[0]) for r in (raw or [])]
+    rows = [dict(zip(names, r[1:])) for r in (raw or [])]
 
     # --- heatmap ranges: whole-table numeric [min, max], first window only ----
     # Computed once per (re)load (offset 0) and cached client-side, and left
@@ -163,6 +169,7 @@ async def get_data(
         offset=off,
         limit=lim,
         ranges=ranges,
+        rowids=rowids,
     )
 
 
@@ -211,6 +218,27 @@ async def profile_column(
         # User-input problem (unknown column). 400, not 500.
         raise HTTPException(status_code=400, detail=str(exc))
     return ColumnProfile(**result)
+
+
+@router.get("/{session_uuid}/column/values", response_model=ColumnValues)
+async def column_values(
+    session_uuid: str,
+    column: str,
+    table_name: Optional[str] = None,
+):
+    """Distinct values of one column for the cleaning dialog's find/replace dropdown
+    (TASK-042). Read-only, same non-AI path as profile_column: the table is resolved
+    against the session's known tables (_resolve_table -> 404 if unknown), the column is
+    validated against the LIVE schema, and the SELECT is Ibis-compiled (ADR-012 -- no
+    client-assembled SQL). Bounded response (`truncated` when the column has more distinct
+    values than returned). `column` is a required query param. Single-table only (ADR-006).
+    """
+    table = _resolve_table(session_uuid, table_name)
+    try:
+        result = await profile_service.distinct_values(table, column)
+    except profile_service.ProfileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return ColumnValues(**result)
 
 
 @router.get("/{session_uuid}/quality", response_model=QualityReport)

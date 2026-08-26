@@ -82,6 +82,9 @@ def _finding(
     column: Optional[str] = None,
     metric: Optional[float] = None,
     suggested_op: Optional[str] = None,
+    suggested_params: Optional[Dict[str, Any]] = None,
+    alt_op: Optional[str] = None,
+    alt_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build one finding dict matching QualityFinding. The id is stable per
     (code, column) so the UI can key/dedupe and it survives re-scans."""
@@ -94,6 +97,9 @@ def _finding(
         "column": column,
         "metric": metric,
         "suggested_op": suggested_op,
+        "suggested_params": suggested_params,
+        "alt_op": alt_op,
+        "alt_params": alt_params,
     }
 
 
@@ -144,6 +150,18 @@ async def assess_table(table_name: str) -> Dict[str, Any]:
             ).sum()
             # Case-folded distinct: fewer than the raw distinct => casing variants.
             aggsB[f"c{i}_fd"] = trimmed.lower().nunique()
+            # Canonical distinct (TASK-041 #3/#6): fold case, drop punctuation, then
+            # collapse internal whitespace -- i.e. exactly what the suggested one-tap
+            # normalize produces. Fewer than the case-folded distinct => values that
+            # differ only by punctuation/spacing ('u.p.i' vs 'upi'). Kept consistent
+            # with the fix so a flagged column genuinely collapses when fixed.
+            aggsB[f"c{i}_cd"] = (
+                trimmed.lower()
+                .re_replace(r"[^a-z0-9 ]", "")
+                .re_replace(r"\s+", " ")
+                .strip()
+                .nunique()
+            )
             # Date-shape counts: how many values match each of the two shapes.
             aggsB[f"c{i}_iso"] = col.re_search(_ISO_DATE_RE).sum()
             aggsB[f"c{i}_sl"] = col.re_search(_SLASH_DATE_RE).sum()
@@ -223,6 +241,20 @@ async def assess_table(table_name: str) -> Dict[str, Any]:
                 f"{null_count:,} of {total:,} rows are null. Consider filling or dropping them.",
                 column=name, metric=pct, suggested_op="impute_null",
             ))
+        elif null_count > 0:
+            # TASK-041 #6/#8: sub-threshold missingness. Type-agnostic (evaluated for
+            # EVERY column, not just strings), so it survives a cast -- fixing a
+            # "stored as text" finding by casting no longer makes the column's missing
+            # values silently vanish from the panel (the #8 complaint). Low severity;
+            # dismissible via Ignore (#7) when the few nulls are expected.
+            structural = "partial_null"
+            pct = round(null_pct * 100, 2)
+            findings.append(_finding(
+                "partial_null", "low",
+                f"'{name}' has some missing values",
+                f"{null_count:,} of {total:,} rows ({pct}%) are null. Fill or drop them if they matter.",
+                column=name, metric=pct, suggested_op="impute_null",
+            ))
 
         # Type/whitespace axis: string columns only, and only when the column is
         # not already empty/constant (those dominate; a constant column's type is moot).
@@ -232,6 +264,7 @@ async def assess_table(table_name: str) -> Dict[str, Any]:
             ws = _as_int(statsB.get(f"c{i}_ws"))
             hn = _as_int(statsB.get(f"c{i}_hn"))
             folded_nd = _as_int(statsB.get(f"c{i}_fd"))
+            canon_nd = _as_int(statsB.get(f"c{i}_cd"))
             iso_ct = _as_int(statsB.get(f"c{i}_iso"))
             slash_ct = _as_int(statsB.get(f"c{i}_sl"))
 
@@ -280,12 +313,23 @@ async def assess_table(table_name: str) -> Dict[str, Any]:
             elif max(num_ratio, dt_ratio) >= MIXED_LO:
                 typed = True
                 pct = round(max(num_ratio, dt_ratio) * 100, 2)
+                # TASK-041 #2: offer a coercing cast toward whichever type most values
+                # parse as. Un-parseable values become NULL -- destructive -- so the
+                # fix opens the dialog pre-set to coerce and the dry-run preview shows
+                # the exact coerced-null count BEFORE anything is applied (the Review
+                # Gate protects the user; this scan still never mutates).
+                to_date = dt_ratio >= num_ratio
                 findings.append(_finding(
                     "mixed_values", "low",
                     f"'{name}' has mixed / inconsistent values",
                     f"About {pct}% of values parse as a number or date and the rest do not "
-                    "-- the column mixes types.",
-                    column=name, metric=pct, suggested_op=None,
+                    "-- the column mixes types. Coercing to the dominant type sets the "
+                    "unparseable rest to null (preview shows how many).",
+                    column=name, metric=pct, suggested_op="cast",
+                    suggested_params={
+                        "coerce": True,
+                        "new_type": "DATE" if to_date else "DOUBLE",
+                    },
                 ))
 
             if ws > 0:
@@ -316,6 +360,27 @@ async def assess_table(table_name: str) -> Dict[str, Any]:
                     f"{nd:,} distinct values collapse to {folded_nd:,} once case and spacing "
                     "are ignored (e.g. 'Male', 'male', 'M ' treated as one). Normalize casing.",
                     column=name, metric=float(nd - folded_nd), suggested_op="string_normalize",
+                    suggested_params={"trim": True, "case": "lower"},
+                ))
+
+            # Punctuation/spacing variants (TASK-041 #3/#6): distinct count shrinks
+            # further once punctuation is dropped and internal spacing collapsed -> the
+            # same category is written with different separators ('upi' vs 'u.p.i' vs
+            # 'U P I'). Independent of the casing check (both can fire). The suggested
+            # one-tap is the exact normalize the canonical-distinct metric mirrors, so
+            # the flagged variants genuinely merge when applied.
+            if not typed and 1 < folded_nd <= CATEGORICAL_MAX and canon_nd < folded_nd:
+                findings.append(_finding(
+                    "inconsistent_values", "medium",
+                    f"'{name}' has values that differ only by punctuation or spacing",
+                    f"{folded_nd:,} values collapse to {canon_nd:,} once punctuation and "
+                    "spacing are ignored (e.g. 'u.p.i', 'U.P.I', 'upi' treated as one). "
+                    "Normalize them so they group together.",
+                    column=name, metric=float(folded_nd - canon_nd),
+                    suggested_op="string_normalize",
+                    suggested_params={
+                        "case": "lower", "strip_special": True, "collapse_whitespace": True,
+                    },
                 ))
 
         # Invalid-values axis (REVIEW-ONLY -- no suggested_op, so a legitimate negative
@@ -324,12 +389,26 @@ async def assess_table(table_name: str) -> Dict[str, Any]:
         if i in numeric_idx and structural != "empty_column":
             neg = _as_int(statsD.get(f"c{i}_neg"))
             if neg > 0:
+                # TASK-041 #2: offer a one-tap "keep only rows >= 0" filter. The
+                # predicate uses the quoted column name (doubled quotes if the name
+                # itself contains one) and is re-validated by the shared fail-closed
+                # formula validator on apply; the dry-run preview shows the row delta
+                # before anything is removed (review-only remains the default stance --
+                # this just pre-fills a sensible, reversible fix).
+                qname = '"' + name.replace('"', '""') + '"'
                 findings.append(_finding(
                     "negative_values", "low",
                     f"'{name}' has negative values",
                     f"{neg:,} value(s) are below zero. If this column can't be negative "
-                    "(age, quantity, price), those rows are likely errors -- review them.",
-                    column=name, metric=float(neg), suggested_op=None,
+                    "(age, quantity, price), those rows are likely errors. Fix keeps only "
+                    "rows where the value is zero or more (preview shows how many drop), "
+                    "or 'Make positive' drops the minus sign and keeps every row.",
+                    column=name, metric=float(neg), suggested_op="filter_rows",
+                    suggested_params={"predicate": f"{qname} >= 0", "action": "keep"},
+                    # TASK-042: the second option -- abs() the column in place instead of
+                    # dropping rows. Needs only the column (carried on the finding), so no
+                    # alt_params. Both fixes go through OpDialog's dry-run preview.
+                    alt_op="absolute_value",
                 ))
         if i in temporal_idx and structural != "empty_column":
             fut = _as_int(statsD.get(f"c{i}_fut"))

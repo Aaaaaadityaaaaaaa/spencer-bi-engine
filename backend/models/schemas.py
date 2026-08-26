@@ -67,6 +67,9 @@ class TransformImputeNull(BaseModel):
     # option that also works for a categorical/text column (mean/median are numeric).
     strategy: Literal["zero", "mean", "median", "mode", "custom"]
     fill_value: Optional[Any] = None
+    # TASK-041 #4: round a computed mean/median fill to this many decimal places
+    # (ignored for zero/mode/custom). None => no rounding (raw mean/median).
+    decimals: Optional[int] = Field(None, ge=0, le=10)
 
 class TransformCast(BaseModel):
     op: Literal["cast"]
@@ -110,6 +113,10 @@ class TransformStringNormalize(BaseModel):
     # (spaces kept). `pad_*` left/right-pads to `pad_length` with a single `pad_char`.
     regex: bool = False
     strip_special: bool = False
+    # TASK-041 #3/#6: collapse internal runs of whitespace to a single space and
+    # trim the ends -- merges " u . p . i " / "u.p.i" style spacing variants so
+    # near-duplicate categories fold together. Applied after trim/case.
+    collapse_whitespace: bool = False
     pad_side: Optional[Literal["left", "right"]] = None
     pad_length: Optional[int] = None
     pad_char: Optional[str] = None
@@ -184,6 +191,27 @@ class TransformFilterRows(BaseModel):
     predicate: str
     action: Literal["keep", "remove"] = "keep"
 
+class TransformUpdateCell(BaseModel):
+    """TASK-041 #5: in-cell edit -- set ONE cell (identified by its stable DuckDB
+    ``rowid``, the same anchor /data pages by) to a new value. `value=None` clears the
+    cell to NULL; otherwise the value is CAST to the column's type in compiled SQL, so
+    a value that can't parse fails closed as a 400. Undoable like any other transform
+    (it snapshots + records a history step). Only `column` + `rowid` are interpolated,
+    both validated/quoted server-side; the value never reaches SQL as raw text."""
+    op: Literal["update_cell"]
+    column: str
+    rowid: int
+    value: Optional[Any] = None
+
+class TransformAbsoluteValue(BaseModel):
+    """TASK-042: replace a numeric column with its absolute value (drop the negative
+    sign) IN PLACE. Offered as the alternative one-click fix on the ``negative_values``
+    quality finding -- "make positive" instead of dropping the rows. Compiled via Ibis
+    ``t.mutate(col=col.abs())`` (ADR-012); rejected for a non-numeric column. Undoable
+    like any transform (snapshots + records a history step)."""
+    op: Literal["absolute_value"]
+    column: str
+
 # Discriminated on `op` so FastAPI/Pydantic route each payload to exactly one
 # model (e.g. drop_null vs impute_null, which share a `column` field).
 TransformParam = Annotated[
@@ -203,6 +231,8 @@ TransformParam = Annotated[
         TransformFillDown,
         TransformFlagOutliers,
         TransformFilterRows,
+        TransformUpdateCell,
+        TransformAbsoluteValue,
     ],
     Field(discriminator="op"),
 ]
@@ -258,6 +288,10 @@ class DataResponse(BaseModel):
     # column, sent only on the first window (offset == 0) and cached client-side.
     # None when the window isn't the first page or the table has no numeric column.
     ranges: Optional[Dict[str, List[float]]] = None
+    # TASK-041 #5: the DuckDB rowid for each row in `rows` (parallel array), so the
+    # grid can target an exact cell for in-cell editing regardless of sort/search.
+    # None on legacy/empty reads; present whenever `rows` is populated.
+    rowids: Optional[List[int]] = None
 
 class ChartRequest(BaseModel):
     x_axis: str
@@ -357,6 +391,17 @@ class ColumnProfile(BaseModel):
     compiled_sql: str
 
 # --- Data-quality panel (Table data-prep / TASK-016) ------------------------
+class ColumnValues(BaseModel):
+    """TASK-042: the distinct non-null values of ONE column, most-frequent first, for the
+    find/replace dropdown in the cleaning dialog. Bounded by a server cap; `truncated` is
+    True when the column has MORE distinct values than were returned (the UI keeps
+    free-text entry so a high-cardinality column is still editable). Read-only; Ibis-
+    compiled from the column name validated against the live schema (ADR-012)."""
+    column: str
+    values: List[Any]
+    distinct: int  # number of values returned (== distinct count unless `truncated`)
+    truncated: bool
+
 class QualityFinding(BaseModel):
     """One issue detected by a whole-table quality scan. `code` is the machine kind
     (drives grouping/tests); `column` is the offending column (None for table-level
@@ -370,6 +415,8 @@ class QualityFinding(BaseModel):
         # TASK-021: hidden nulls, casing variants, mixed date formats, out-of-range values
         "hidden_null", "inconsistent_case", "mixed_date_format",
         "negative_values", "future_date",
+        # TASK-041 #6/#8: sub-threshold nulls, and punctuation/spacing category variants
+        "partial_null", "inconsistent_values",
     ]
     severity: Literal["high", "medium", "low", "info"]
     title: str
@@ -377,6 +424,16 @@ class QualityFinding(BaseModel):
     column: Optional[str] = None
     metric: Optional[float] = None  # headline number (a % or a count) for display
     suggested_op: Optional[str] = None  # an OpKind value (see TransformParam), or None
+    # TASK-041 #2: pre-filled fields for the one-click Fix, spread into the OpDialog
+    # form so a fix like "cast to DATE, coerce" or "keep rows >= 0" is one tap. None
+    # => the dialog opens with its own defaults (unchanged behaviour).
+    suggested_params: Optional[Dict[str, Any]] = None
+    # TASK-042: an OPTIONAL SECOND fix for the same finding. e.g. negative_values offers
+    # both "keep >= 0" (suggested_op=filter_rows) and "make positive" here. None => the
+    # finding has just the one fix. Same shape as suggested_op/params; the UI renders a
+    # second Fix button and routes it through the same dry-run-previewed OpDialog.
+    alt_op: Optional[str] = None
+    alt_params: Optional[Dict[str, Any]] = None
 
 class QualityReport(BaseModel):
     """Result of a whole-table quality scan, computed server-side over the full table
@@ -410,6 +467,14 @@ class AskResponse(BaseModel):
 
 class ExecuteRequest(BaseModel):
     sql: str
+
+class MaterializeRequest(BaseModel):
+    """#23: persist a Query Engine SELECT's result as a real, reusable session table.
+    `sql` is the reviewed SELECT (re-validated + tenant-scoped server-side, exactly
+    like /execute); `name` is an optional friendly table name (sanitized + deduped
+    server-side, defaulting to 'query_result')."""
+    sql: str
+    name: Optional[str] = None
 
 class ExecuteResponse(BaseModel):
     query_id: str

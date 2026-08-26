@@ -11,19 +11,24 @@
 // Both async calls carry a uuid-staleness guard (mirrors DataGrid/ChartCanvas): if the
 // session switches mid-flight, the late response is dropped instead of rendered.
 import { ref, watch, computed, onActivated } from 'vue'
-import { Sparkles, Play, Loader2, AlertCircle, Bookmark, Clock, Check, X, Info, Zap, Wrench } from '@lucide/vue'
+import { useRouter } from 'vue-router'
+import { Sparkles, Play, Loader2, AlertCircle, Bookmark, Clock, Check, X, Info, Zap, Wrench, Table2, LayoutDashboard } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import { useQueryHistory } from '../composables/useQueryHistory'
 import { useQuestionHandoff } from '../composables/useQuestionHandoff'
+import { useCanvasSeed } from '../composables/useCanvasSeed'
 import { askQuestion, sqlAssist, executeSql, apiErrorMessage } from '../services/api'
+import { friendlyTableName } from '../utils/tableName'
 import type { AskTurn, SqlAssistMode, ExecuteResultResponse } from '../types'
 import SqlEditor from './SqlEditor.vue'
 import ResultsTable from './ResultsTable.vue'
 import QueryHistory from './QueryHistory.vue'
 
-const { sessionUuid, tableName, columns } = useSession()
+const { sessionUuid, tableName, columns, materializeResult, error: sessionError } = useSession()
 const { recordRun, saveQuery } = useQueryHistory()
 const { pendingQuestion, takePendingQuestion } = useQuestionHandoff()
+const { seedChartOnCanvas } = useCanvasSeed()
+const router = useRouter()
 
 const question = ref('')
 const sqlText = ref('')
@@ -62,6 +67,17 @@ const runError = ref<string | null>(null)
 // self-correction passes the model needed.
 const askMeta = ref<{ cacheHit: boolean; retries: number } | null>(null)
 const result = ref<ExecuteResultResponse | null>(null)
+// #23: the SQL that produced the currently-shown `result`. Captured at run time (not read
+// live from the editor) so "Save as table" / "Send to Canvas" persist exactly the result on
+// screen, even if the user has since edited the editor text. The backend re-validates anyway.
+const lastRanSql = ref('')
+// #23 "materialize" flow: turn the shown result into a real table. `materializeDest` is the
+// pending destination (also gates the inline name input): 'table' -> land in the Table view;
+// 'canvas' -> switch to Canvas + seed a fresh chart tile over the new table. null = idle.
+const materializeDest = ref<'table' | 'canvas' | null>(null)
+const resultName = ref('')
+const materializing = ref(false)
+const materializeError = ref<string | null>(null)
 
 // #21 conversational refinement: the running (question -> SQL) conversation. Each
 // successful generate appends a turn; the next generate replays the last MAX_TURNS as
@@ -130,6 +146,7 @@ async function run(): Promise<void> {
     const res = await executeSql(uuid, sql)
     if (uuid !== sessionUuid.value) return
     result.value = res
+    lastRanSql.value = sql
     recordRun({ sql, ok: true, rowCount: res.row_count })
   } catch (e) {
     if (uuid === sessionUuid.value) {
@@ -192,6 +209,9 @@ onActivated(consumePending)
 watch(sessionUuid, () => {
   turns.value = []
   result.value = null
+  lastRanSql.value = ''
+  materializeDest.value = null
+  materializeError.value = null
   askMeta.value = null
   askError.value = null
   runError.value = null
@@ -222,6 +242,43 @@ function confirmSave(): void {
 }
 function cancelSave(): void {
   savingName.value = null
+}
+
+// #23: persist the shown result as a NEW working table (materializeResult), then route to
+// where it's useful. startMaterialize opens the inline name input remembering the chosen
+// destination; confirm calls the backend (which re-validates + tenant-scopes the SQL and
+// CREATE TABLE's the FULL result, not just the previewed rows) then navigates.
+function startMaterialize(dest: 'table' | 'canvas'): void {
+  if (!result.value || !lastRanSql.value) return
+  materializeError.value = null
+  // Default the name to the NL question (if any), else a generic. The backend sanitizes it
+  // into a valid identifier and 409s a clash, which we surface inline for a retry.
+  resultName.value = question.value.trim() || 'query_result'
+  materializeDest.value = dest
+}
+
+function cancelMaterialize(): void {
+  materializeDest.value = null
+  materializeError.value = null
+}
+
+async function confirmMaterialize(): Promise<void> {
+  const dest = materializeDest.value
+  if (!dest || materializing.value || !lastRanSql.value) return
+  materializing.value = true
+  materializeError.value = null
+  const newTable = await materializeResult(lastRanSql.value, resultName.value.trim() || null)
+  materializing.value = false
+  if (!newTable) {
+    // materializeResult surfaced the reason (duplicate name, invalid/failed query) on the
+    // shared session error; show it inline and keep the input open to retry.
+    materializeError.value = sessionError.value ?? 'Could not save the result as a table.'
+    return
+  }
+  materializeDest.value = null
+  // The new table is now the active table. 'canvas' also arms a fresh chart tile to land on.
+  if (dest === 'canvas') seedChartOnCanvas()
+  await router.push(dest === 'canvas' ? '/canvas' : '/table')
 }
 </script>
 
@@ -291,11 +348,11 @@ function cancelSave(): void {
           <button
             type="button"
             class="rounded-2 border border-outline-gray-2 bg-surface-gray-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-gray-7 transition-colors hover:bg-surface-gray-3 hover:text-ink-gray-8"
-            title="Click to insert the table name"
+            :title="`Click to insert the table name (${tableName})`"
             @mousedown.prevent
             @click="insertToken(tableName)"
           >
-            {{ tableName }}
+            {{ friendlyTableName(tableName) }}
           </button>
         </div>
         <div v-if="columns.length" class="flex flex-wrap items-center gap-1.5">
@@ -470,13 +527,88 @@ function cancelSave(): void {
           Fix with AI
         </button>
       </div>
-      <ResultsTable
-        v-else-if="result"
-        :columns="result.columns"
-        :rows="result.rows"
-        :truncated="result.truncated"
-        :session-uuid="sessionUuid"
-      />
+      <div v-else-if="result" class="space-y-2">
+        <!-- #23: send this result somewhere useful. Both actions first persist the result as
+             a new session table (backend re-validates the SQL); "Save as table" then lands in
+             the Table view, "Send to Canvas" switches to Canvas with a fresh chart tile over
+             the new table. Hidden for an empty result (nothing worth saving). -->
+        <div v-if="result.row_count > 0" class="flex flex-wrap items-center gap-2">
+          <span class="text-[11px] font-medium uppercase tracking-wide text-ink-gray-4">
+            Use this result
+          </span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="materializing"
+            title="Save these rows as a new table you can clean, query and chart"
+            @click="startMaterialize('table')"
+          >
+            <Table2 class="h-3.5 w-3.5 text-primary" /> Save as table
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="materializing"
+            title="Save these rows as a table and start a chart over it on the Canvas"
+            @click="startMaterialize('canvas')"
+          >
+            <LayoutDashboard class="h-3.5 w-3.5 text-primary" /> Send to Canvas
+          </button>
+          <span v-if="result.truncated" class="text-[11px] text-ink-gray-4">
+            Saves all matching rows — the preview above is capped.
+          </span>
+        </div>
+
+        <!-- Inline "name this table" input (opened by either action). Enter confirms. -->
+        <div
+          v-if="materializeDest !== null"
+          class="flex flex-wrap items-center gap-2 rounded-3 border border-outline-gray-2 bg-surface-gray-1 px-2 py-1.5"
+        >
+          <component
+            :is="materializeDest === 'canvas' ? LayoutDashboard : Table2"
+            class="h-3.5 w-3.5 shrink-0 text-primary"
+          />
+          <input
+            v-model="resultName"
+            type="text"
+            placeholder="Name this table (e.g. top_customers)"
+            class="min-w-0 flex-1 bg-transparent text-sm text-ink-gray-8 placeholder-ink-gray-4 focus:outline-none"
+            @keydown.enter="confirmMaterialize"
+            @keydown.esc="cancelMaterialize"
+          />
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded-2 bg-primary px-2 py-1 text-xs font-medium text-ink-white transition-colors hover:bg-primary-7 disabled:opacity-50"
+            :disabled="materializing"
+            @click="confirmMaterialize"
+          >
+            <Loader2 v-if="materializing" class="h-3.5 w-3.5 animate-spin" />
+            <Check v-else class="h-3.5 w-3.5" />
+            {{ materializeDest === 'canvas' ? 'Save & open Canvas' : 'Save table' }}
+          </button>
+          <button
+            type="button"
+            class="rounded-2 p-1 text-ink-gray-4 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-7"
+            title="Cancel"
+            @click="cancelMaterialize"
+          >
+            <X class="h-3.5 w-3.5" />
+          </button>
+          <span
+            v-if="materializeError"
+            class="inline-flex w-full items-center gap-1 text-[11px] text-ink-red"
+          >
+            <AlertCircle class="h-3.5 w-3.5 shrink-0" /> {{ materializeError }}
+          </span>
+        </div>
+
+        <ResultsTable
+          :columns="result.columns"
+          :rows="result.rows"
+          :truncated="result.truncated"
+          :session-uuid="sessionUuid"
+        />
+      </div>
       <div v-else class="rounded-4 border border-dashed border-outline-gray-2 py-8 text-center text-xs text-ink-gray-4">
         Run a query to see results.
       </div>

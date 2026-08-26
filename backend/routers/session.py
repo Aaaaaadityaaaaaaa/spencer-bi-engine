@@ -11,6 +11,7 @@ from models.schemas import (
     SessionResponse,
     SchemaResponse,
     TableUploadResponse,
+    MaterializeRequest,
     TableSchemaResponse,
     TransformParam,
     TransformResponse,
@@ -22,6 +23,7 @@ from deps import get_current_user, get_db, require_session_owner
 from services.app_db import Dataset, User
 from services.duckdb_manager import db_manager
 from services.redis_manager import redis_manager
+from services.sql_validator import sql_validator
 from services import cleanup_service, ownership_service, transform_service
 
 router = APIRouter()
@@ -288,6 +290,69 @@ async def upload_table(session_uuid: str, file: UploadFile = File(...)):
     file_path = _persist_upload(session_uuid, file, clean_name)
 
     row_count, columns = await analyze_and_register_table(session_uuid, table_name, file_path, is_primary=False)
+
+    return TableUploadResponse(
+        table_name=table_name,
+        row_count=row_count,
+        columns=columns
+    )
+
+@router.post("/{session_uuid}/materialize", response_model=TableUploadResponse, dependencies=[Depends(require_session_owner)])
+async def materialize_query(session_uuid: str, payload: MaterializeRequest):
+    """#23: persist a reviewed Query Engine SELECT as a real session table, so a result
+    can become a new working table (Table view) or the base for a Canvas chart.
+
+    Same fail-closed AI-SQL defense as /execute (ai.py) -- validate() (a single
+    read-only SELECT) then scope_violation() (S-1/TASK-029: only THIS session's own
+    tables, no filesystem/IO functions, no qualified names). The ONLY difference is
+    that /execute runs in a rolled-back sandbox while this runs on run_readwrite so the
+    CREATE TABLE persists. The new table is named + registered exactly like an upload
+    (schema cache refreshed, is_primary=False, 409 on a name clash) and its own
+    `t_<uuid>_...` name is scope-valid, so it can be queried again afterwards."""
+    sql = (payload.sql or "").strip()
+    if not sql:
+        raise HTTPException(status_code=400, detail="SQL is required.")
+    if not sql_validator.validate(sql):
+        raise HTTPException(
+            status_code=400,
+            detail="This query was rejected: only a single read-only SELECT is allowed.",
+        )
+    # S-1: read-only is necessary but not sufficient on the shared single-file DuckDB --
+    # gate the SELECT to this session's own tables (identical check to /execute).
+    scope_reason = sql_validator.scope_violation(sql, session_uuid)
+    if scope_reason:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This query was rejected: it {scope_reason}.",
+        )
+
+    clean_name = sanitize_table_name(payload.name or "query_result")
+    table_name = f"t_{session_uuid.replace('-', '_')}_{clean_name}"
+
+    # No silent clobber -- same guard as upload_table.
+    existing = redis_manager.get_json(f"schema:{session_uuid}") or {}
+    if table_name in existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A table named '{clean_name}' already exists in this session",
+        )
+
+    # Refresh the liveness marker (owned TTL), as create/upload do.
+    redis_manager.touch_session(session_uuid, config.OWNED_SESSION_TTL_SECONDS)
+
+    # Strip a lone trailing ';' so the SELECT wraps as a subquery (stacked statements
+    # were already rejected by validate()).
+    inner = sql.rstrip(";").rstrip()
+    try:
+        # run_readwrite (NOT run_sandboxed): the whole point is to PERSIST the result.
+        await db_manager.run_readwrite(f"CREATE TABLE {table_name} AS SELECT * FROM ({inner}) _q")
+    except Exception as exc:
+        # A validated SELECT can still fail at run time (unknown column, duplicate
+        # output column names, type error). Surface it as a 400 for the editor.
+        raise HTTPException(status_code=400, detail=f"Could not save result as a table: {exc}")
+
+    row_count = (await db_manager.run_readwrite(f"SELECT COUNT(*) FROM {table_name}"))[0][0]
+    columns = await refresh_table_schema_cache(session_uuid, table_name, is_primary=False)
 
     return TableUploadResponse(
         table_name=table_name,

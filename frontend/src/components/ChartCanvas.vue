@@ -13,7 +13,7 @@
 // localStorage via useActiveDashboard, so a reload restores the exact multi-page board
 // (matched by sessionUuid; a foreign/absent session seeds fresh). NAMED save/load slots
 // are useDashboards' job, wired into the header here (TASK-035).
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import { AlertCircle, BookMarked, FileDown, Filter, ImageDown, LayoutDashboard, Loader2, Maximize, Pencil, Plus, RefreshCw, Save, Sparkles, Trash2, X } from '@lucide/vue'
 import { toPng } from 'html-to-image'
@@ -34,6 +34,7 @@ import { supportsBreakdown } from '../types'
 import { useSession } from '../composables/useSession'
 import { persistActiveDashboard, readActiveDashboard } from '../composables/useActiveDashboard'
 import { useDashboards } from '../composables/useDashboards'
+import { useCanvasSeed } from '../composables/useCanvasSeed'
 import { apiErrorMessage, fetchAggregate, narrateDataset } from '../services/api'
 import { categoricalColumns, numericColumns, temporalColumns } from '../utils/columnKind'
 import {
@@ -58,6 +59,7 @@ import KpiCard from './KpiCard.vue'
 import ChartTile from './ChartTile.vue'
 
 const { sessionUuid, tableName, columns, rowCount, dataVersion } = useSession()
+const { takePendingSeed } = useCanvasSeed()
 
 const MAX_KPIS = 6 // per page
 const MAX_CHARTS = 6 // per page
@@ -906,6 +908,13 @@ function syncPresenting(): void {
   presenting.value = document.fullscreenElement === captureEl.value
 }
 onMounted(() => document.addEventListener('fullscreenchange', syncPresenting))
+// #23: arriving from the Query Engine's "Send to Canvas" — the result was just
+// materialized and made the active table, so drop in a fresh chart tile to configure
+// over it. Read-and-clear (takePendingSeed) so it fires once, not on every keep-alive
+// show; addChart no-ops if the active page is already at MAX_CHARTS.
+onActivated(() => {
+  if (takePendingSeed()) addChart()
+})
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', syncPresenting)
   if (persistTimer) clearTimeout(persistTimer)

@@ -305,10 +305,10 @@ const option = computed<EChartsCoreOption | null>(() => {
 
   // Category-axis chrome, shared by every cartesian shape (1-D, 2-D and heatmap).
   // `flat` suppresses the >8-entry label rotation (a horizontal bar reads labels flat).
-  // TASK-038: `name` draws the axis title (the field on that axis). `nameGap` is biased
-  // large to clear the tick labels — rotated X labels and (flat) Y category labels are
-  // taller/wider — because with `grid.outerBoundsContain: 'all'` any excess only reserves
-  // gutter, it never clips; too small would let the title overlap the labels.
+  // TASK-038: `name` draws the axis title (the field on that axis). `nameGap` clears the tick
+  // labels so the title never overlaps them; kept modest so that under the cartesian grids'
+  // `outerBoundsContain: 'axisLabel'` (TASK-041 #1) the title still lands inside the small
+  // outer margin. On very dense (rotated) or flat category axes the title may sit tight.
   const makeCategoryAxis = (labels: string[], flat = false, name?: string | null) => {
     const rotate = !flat && labels.length > 8
     return {
@@ -316,20 +316,25 @@ const option = computed<EChartsCoreOption | null>(() => {
       data: labels,
       name: name || undefined,
       nameLocation: 'middle' as const,
-      nameGap: flat ? 72 : rotate ? 60 : 30,
+      nameGap: flat ? 44 : rotate ? 38 : 22,
       nameTextStyle: axisNameStyle,
       axisLabel: { ...axisLabelStyle, rotate: rotate ? 35 : 0, hideOverlap: true },
       axisTick: { show: false },
       axisLine: { lineStyle: { color: CHART_SPLIT_LINE } },
     }
   }
-  // Value axis defaults to a Y-axis gap (vertical, rotated number labels); pass a smaller
-  // gap when it sits on X (a horizontal bar's value axis reads flat number labels).
-  const makeValueAxis = (name?: string | null, nameGap = 54) => ({
+  // Value axis. TASK-041 #1: the tick NUMBERS must be visible at any tile size. The grids
+  // below use `outerBoundsContain: 'axisLabel'` (the classic containLabel behaviour) so the
+  // number gutter is always reserved; and we keep the axis NAME slim by drawing it vertical
+  // on Y (nameRotate 90) — a wide *horizontal* Y-title (the TASK-038 default) is what had been
+  // squeezing the numbers off small tiles under the old 'all' containment. hbar's value axis
+  // sits on X, so it passes nameRotate 0 to keep that title horizontal below the axis.
+  const makeValueAxis = (name?: string | null, nameGap = 46, nameRotate = 90) => ({
     type: 'value' as const,
     name: name || undefined,
     nameLocation: 'middle' as const,
     nameGap,
+    nameRotate,
     nameTextStyle: axisNameStyle,
     axisLabel: axisLabelStyle,
     axisLine: { show: false },
@@ -442,12 +447,12 @@ const option = computed<EChartsCoreOption | null>(() => {
     }))
     return {
       grid: {
-        left: 4,
+        left: 24,
         right: 16,
         top: 34,
-        bottom: 4,
+        bottom: 22,
         outerBoundsMode: 'same',
-        outerBoundsContain: 'all',
+        outerBoundsContain: 'axisLabel',
       },
       tooltip: { trigger: 'axis', axisPointer: { type: isBar ? 'shadow' : 'line' } },
       legend: { type: 'scroll', top: 4, textStyle: axisLabelStyle },
@@ -581,22 +586,24 @@ const option = computed<EChartsCoreOption | null>(() => {
       : values
 
   return {
-    // ECharts 6 deprecated `grid.containLabel`; without registering the legacy feature it
-    // is silently ignored and rotated axis labels get clipped. `outerBoundsMode: 'same'`
-    // + `outerBoundsContain: 'axisLabel'` is its documented equivalent, and needs no extra
-    // module in the modular build.
+    // ECharts 6 deprecated `grid.containLabel`; `outerBoundsMode: 'same'` +
+    // `outerBoundsContain: 'axisLabel'` is its documented equivalent — it reserves the
+    // tick-label gutter so the value NUMBERS always show at any tile size (TASK-041 #1).
+    // left/bottom carry a little extra margin so the axis TITLES (which 'axisLabel' does
+    // not itself reserve room for) still have somewhere to land.
     grid: {
-      left: 4,
+      left: 24,
       right: 16,
       top: 16,
-      bottom: 4,
+      bottom: 22,
       outerBoundsMode: 'same',
-      outerBoundsContain: 'all',
+      outerBoundsContain: 'axisLabel',
     },
     tooltip: { trigger: 'axis', axisPointer: { type: isBarSeries ? 'shadow' : 'line' } },
-    // hbar swaps the axes: value on X (bottom, flat number labels → small gap), category on
-    // Y. Every other cartesian shape keeps category on X, value on Y.
-    xAxis: isHorizontal ? makeValueAxis(measureLabel.value, 30) : categoryAxis,
+    // hbar swaps the axes: value on X (bottom, flat number labels → small gap, title stays
+    // horizontal below → nameRotate 0), category on Y. Every other cartesian shape keeps
+    // category on X, value on Y (with a slim vertical Y title, nameRotate 90 by default).
+    xAxis: isHorizontal ? makeValueAxis(measureLabel.value, 30, 0) : categoryAxis,
     yAxis: isHorizontal ? categoryAxis : makeValueAxis(measureLabel.value),
     series: [
       {

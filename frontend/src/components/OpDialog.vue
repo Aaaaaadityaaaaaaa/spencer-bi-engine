@@ -6,7 +6,7 @@
 import { reactive, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { X, Play, Loader2, AlertCircle } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
-import { previewTransform, apiErrorMessage } from '../services/api'
+import { previewTransform, apiErrorMessage, fetchColumnValues } from '../services/api'
 import type {
   OpRequest,
   OpKind,
@@ -48,6 +48,10 @@ const OP_META: Record<OpKind, { title: string; desc: string }> = {
   fill_down: { title: 'Fill down / up', desc: 'Fill nulls in a column with the last (down) or next (up) non-null value in row order.' },
   flag_outliers: { title: 'Flag outliers', desc: 'Add a boolean column marking rows more than N standard deviations from the column mean (z-score).' },
   filter_rows: { title: 'Filter rows', desc: 'Keep or remove rows matching a SQL predicate.' },
+  // In-cell edits (TASK-041 #5) are applied straight from the grid, not this dialog; the
+  // entry only exists to keep this map exhaustive over OpKind.
+  update_cell: { title: 'Edit cell', desc: 'Set a single cell to a new value.' },
+  absolute_value: { title: 'Make values positive', desc: 'Replace a numeric column with its absolute value — drops the negative sign, keeps every row.' },
 }
 
 const CAST_TYPES = ['VARCHAR', 'BIGINT', 'DOUBLE', 'BOOLEAN', 'DATE', 'TIMESTAMP']
@@ -101,12 +105,42 @@ const form = reactive({
   fillDirection: 'down' as FillDirection,
   outlierMethod: 'zscore' as OutlierMethod,
   threshold: 3,
+  // --- TASK-041 (#4 impute decimals, #3/#6 collapse internal whitespace) ---
+  collapseWhitespace: false,
+  roundEnabled: false,
+  decimals: 2,
 })
 
 const preview = ref<TransformPreviewResponse | null>(null)
 const previewing = ref(false)
 const previewError = ref<string | null>(null)
 const applyError = ref<string | null>(null)
+
+// TASK-042: distinct values of the normalize column, offered as a <datalist> dropdown on
+// the Find field so a value can be picked instead of retyped. Populated lazily (only for
+// string_normalize) via GET /column/values; `findTruncated` flags a high-cardinality
+// column whose list was capped server-side (the field still accepts free text).
+const findValues = ref<string[]>([])
+const findTruncated = ref(false)
+let findSeq = 0
+async function loadFindValues(): Promise<void> {
+  findValues.value = []
+  findTruncated.value = false
+  if (!props.request || props.request.op !== 'string_normalize') return
+  const uuid = sessionUuid.value
+  const col = form.column.trim()
+  if (!uuid || !col) return
+  const seq = ++findSeq
+  try {
+    const res = await fetchColumnValues(uuid, col, tableName.value ?? undefined)
+    if (seq !== findSeq) return // a newer load (column/op change) superseded this one
+    findValues.value = res.values.filter((v) => v != null).map((v) => String(v))
+    findTruncated.value = res.truncated
+  } catch {
+    // Non-fatal: the dropdown is a convenience; the Find field still works as free text.
+    if (seq === findSeq) { findValues.value = []; findTruncated.value = false }
+  }
+}
 
 const meta = computed(() => (props.request ? OP_META[props.request.op] : null))
 
@@ -131,6 +165,13 @@ function buildOp(): { op: TransformOp } | { error: string } {
         return { error: 'Enter a fill value' }
       const op: ImputeNullOp = { op: 'impute_null', column: col, strategy: form.strategy }
       if (form.strategy === 'custom') op.fill_value = form.fillValue
+      // TASK-041 #4: optionally round a computed mean/median fill (no effect on the other
+      // strategies — a zero/mode/custom value isn't a long decimal).
+      if ((form.strategy === 'mean' || form.strategy === 'median') && form.roundEnabled) {
+        if (!Number.isInteger(form.decimals) || form.decimals < 0 || form.decimals > 10)
+          return { error: 'Decimals must be a whole number from 0 to 10' }
+        op.decimals = form.decimals
+      }
       return { op }
     }
     case 'cast':
@@ -165,6 +206,7 @@ function buildOp(): { op: TransformOp } | { error: string } {
       if (form.trim) { op.trim = true; any = true }
       if (form.scase) { op.case = form.scase; any = true }
       if (form.stripSpecial) { op.strip_special = true; any = true }
+      if (form.collapseWhitespace) { op.collapse_whitespace = true; any = true }
       if (form.find) {
         op.find = form.find
         op.replace = form.replace
@@ -228,6 +270,15 @@ function buildOp(): { op: TransformOp } | { error: string } {
         return { error: 'Threshold must be a positive number' }
       return { op: { op: 'flag_outliers', column: col, new_column_name: name, method: form.outlierMethod, threshold: form.threshold } }
     }
+    case 'absolute_value':
+      // TASK-042: no fields — abs() the chosen numeric column in place. The dry-run
+      // preview shows the effect; Apply commits (undoable). Numeric-only (backend guard).
+      if (!col) return { error: 'Select a column' }
+      return { op: { op: 'absolute_value', column: col } }
+    // update_cell is applied directly by the grid's in-cell editor (TASK-041 #5) and is
+    // never opened through this dialog, so it has no form here.
+    default:
+      return { error: 'This operation is not available here' }
   }
 }
 
@@ -271,6 +322,27 @@ watch(built, () => {
   }
   debounceTimer = setTimeout(() => void runPreview(), 350)
 })
+
+// Map a quality-panel Fix's `suggested_params` (snake_case op-field keys) onto the flat
+// form so the dialog opens pre-filled and one Apply away. Only known keys with the right
+// runtime type are applied — an unexpected shape is ignored, never trusted blindly.
+function applySeed(seed: Record<string, unknown> | undefined): void {
+  if (!seed) return
+  if (typeof seed.coerce === 'boolean') form.coerce = seed.coerce
+  if (typeof seed.new_type === 'string') form.newType = seed.new_type
+  if (typeof seed.predicate === 'string') form.predicate = seed.predicate
+  if (seed.action === 'keep' || seed.action === 'remove') form.action = seed.action
+  if (seed.case === 'upper' || seed.case === 'lower' || seed.case === 'capitalize') form.scase = seed.case
+  if (typeof seed.trim === 'boolean') form.trim = seed.trim
+  if (typeof seed.strip_special === 'boolean') form.stripSpecial = seed.strip_special
+  if (typeof seed.collapse_whitespace === 'boolean') form.collapseWhitespace = seed.collapse_whitespace
+  if (
+    seed.strategy === 'mean' || seed.strategy === 'median' || seed.strategy === 'mode' ||
+    seed.strategy === 'zero' || seed.strategy === 'custom'
+  ) form.strategy = seed.strategy
+  if (typeof seed.decimals === 'number') { form.decimals = seed.decimals; form.roundEnabled = true }
+  if (seed.fill_value != null) form.fillValue = String(seed.fill_value)
+}
 
 // Reset the form to op-appropriate defaults each time a new request opens.
 watch(
@@ -321,8 +393,24 @@ watch(
     form.fillDirection = 'down'
     form.outlierMethod = 'zscore'
     form.threshold = 3
+    // TASK-041 (#4 impute decimals, #3/#6 collapse whitespace)
+    form.collapseWhitespace = false
+    form.roundEnabled = false
+    form.decimals = 2
+    // Overlay any Fix-provided seed AFTER the defaults above (may override newType/coerce
+    // for a coercing cast, predicate/action for a filter, case/strip/collapse for a
+    // normalize, etc.), so a one-click Fix lands on the dialog ready to apply.
+    applySeed(r.seed)
+    // TASK-042: prime the Find dropdown for a normalize op (no-op for every other op).
+    void loadFindValues()
   },
   { immediate: true },
+)
+
+// Reload the Find dropdown when the user switches the normalize column mid-dialog.
+watch(
+  () => form.column,
+  () => { if (props.request?.op === 'string_normalize') void loadFindValues() },
 )
 
 async function apply(): Promise<void> {
@@ -383,7 +471,7 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
       <div class="flex-1 space-y-4 overflow-y-auto px-5 py-4">
         <!-- Column picker (shared by the column-scoped ops) -->
         <div
-          v-if="['drop_null', 'impute_null', 'cast', 'drop_column', 'rename_column', 'string_normalize', 'split_column', 'date_extract', 'bin_column', 'fill_down', 'flag_outliers'].includes(request.op)"
+          v-if="['drop_null', 'impute_null', 'cast', 'drop_column', 'rename_column', 'string_normalize', 'split_column', 'date_extract', 'bin_column', 'fill_down', 'flag_outliers', 'absolute_value'].includes(request.op)"
         >
           <label class="block text-xs font-medium text-ink-gray-7 mb-1">{{ ['split_column', 'date_extract', 'bin_column', 'flag_outliers'].includes(request.op) ? 'Source column' : 'Column' }}</label>
           <select v-model="form.column" :class="inputCls">
@@ -408,6 +496,23 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
           <div v-if="form.strategy === 'custom'">
             <label :class="labelCls">Fill value</label>
             <input v-model="form.fillValue" type="text" :class="inputCls" placeholder="e.g. 0 or Unknown" />
+          </div>
+          <!-- TASK-041 #4: optional rounding for a computed mean/median fill -->
+          <div v-if="form.strategy === 'mean' || form.strategy === 'median'">
+            <label class="flex items-center gap-2 text-sm text-ink-gray-8">
+              <input type="checkbox" v-model="form.roundEnabled" />
+              Round to
+              <input
+                v-model.number="form.decimals"
+                type="number"
+                min="0"
+                max="10"
+                :disabled="!form.roundEnabled"
+                class="w-16 rounded-3 border border-outline-gray-2 bg-surface-base px-2 py-1 text-sm text-ink-gray-9 focus:border-primary-5 focus:outline-none disabled:opacity-50"
+              />
+              decimal places
+            </label>
+            <p class="mt-1 text-[11px] text-ink-gray-4">The mean/median is often a long decimal; round it to keep the column tidy.</p>
           </div>
         </template>
 
@@ -484,6 +589,9 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
           <label class="flex items-center gap-2 text-sm text-ink-gray-8">
             <input type="checkbox" v-model="form.stripSpecial" /> Strip special characters (keep letters, digits, spaces)
           </label>
+          <label class="flex items-center gap-2 text-sm text-ink-gray-8">
+            <input type="checkbox" v-model="form.collapseWhitespace" /> Collapse repeated spaces into one (and trim ends)
+          </label>
           <div>
             <label :class="labelCls">Case</label>
             <select v-model="form.scase" :class="inputCls">
@@ -496,7 +604,22 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label :class="labelCls">Find</label>
-              <input v-model="form.find" type="text" :class="inputCls" :placeholder="form.regex ? 'regex, e.g. \\d+' : 'text to find'" />
+              <!-- TASK-042: in plain (non-regex) mode, offer the column's distinct values as a
+                   typeable dropdown (native <datalist>). Regex mode omits the list — the field
+                   is a pattern then, not a literal value. -->
+              <input
+                v-model="form.find"
+                type="text"
+                :class="inputCls"
+                :list="form.regex ? undefined : 'op-find-values'"
+                :placeholder="form.regex ? 'regex, e.g. \\d+' : (findValues.length ? 'pick a value or type…' : 'text to find')"
+              />
+              <datalist v-if="!form.regex" id="op-find-values">
+                <option v-for="v in findValues" :key="v" :value="v" />
+              </datalist>
+              <p v-if="!form.regex && findTruncated" class="mt-1 text-[11px] text-ink-gray-4">
+                Showing the most common values only — this column has more than the list can hold.
+              </p>
             </div>
             <div>
               <label :class="labelCls">Replace with</label>
@@ -658,6 +781,12 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
         <!-- dedupe has no fields -->
         <p v-if="request.op === 'dedupe'" class="text-sm text-ink-gray-6">
           This removes rows that are exact duplicates across all columns. Preview the impact below.
+        </p>
+
+        <!-- absolute_value has no fields beyond the column picker (TASK-042) -->
+        <p v-if="request.op === 'absolute_value'" class="text-sm text-ink-gray-6">
+          Replaces every value in the chosen column with its absolute value — the negative sign is dropped and
+          <span class="font-medium">no rows are removed</span>. Preview the impact below.
         </p>
 
         <!-- Preview panel -->

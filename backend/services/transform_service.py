@@ -203,6 +203,11 @@ def _compile_structured(table_name: str, columns: List[Tuple[str, str]], param) 
             fill = ibis.literal(param.fill_value)
         else:
             raise TransformError(f"unknown impute strategy '{strat}'")
+        # TASK-041 #4: round a computed mean/median to a chosen precision (e.g. a
+        # price column filled to 2 dp instead of a long float). Only meaningful for
+        # the numeric-computed strategies; zero/mode/custom are used as-is.
+        if param.decimals is not None and strat in ("mean", "median"):
+            fill = fill.round(param.decimals)
         expr = t.mutate(**{param.column: col.fill_null(fill)})
 
     elif op == "cast":
@@ -283,6 +288,14 @@ def _compile_structured(table_name: str, columns: List[Tuple[str, str]], param) 
             # TASK-018: drop every char that is not an ASCII letter/digit/space.
             # Global REGEXP_REPLACE; `[...]` is a literal char class, not user input.
             col = col.re_replace(r"[^A-Za-z0-9 ]", "")
+            applied = True
+        if param.collapse_whitespace:
+            # TASK-041 #3/#6: collapse internal whitespace runs to a single space and
+            # trim the ends, so " u.p.i " / "u  p  i" fold together. The regex is a
+            # literal (not user input). Runs after strip_special so punctuation is
+            # already gone -- this is exactly the normalization the quality scan's
+            # canonical-distinct metric mirrors, so a flagged column collapses when fixed.
+            col = col.re_replace(r"\s+", " ").strip()
             applied = True
         if param.find is not None:
             if param.regex:
@@ -455,6 +468,21 @@ def _compile_structured(table_name: str, columns: List[Tuple[str, str]], param) 
         is_out = (col - col.mean()).abs() > (param.threshold * col.std())
         expr = t.mutate(**{new: is_out})
 
+    elif op == "absolute_value":
+        # TASK-042: replace a numeric column with abs(col) IN PLACE -- the "make
+        # positive" alternative to dropping rows on the negative_values finding. A
+        # set-based scalar op (no ordered window), so it stays Ibis-compiled (ADR-012).
+        # Numeric-only, same guard as flag_outliers; NULLs stay NULL under abs().
+        if param.column not in colnames:
+            raise TransformError(f"column '{param.column}' not found")
+        coltypes = {c: d for c, d in columns}
+        dt = coltypes.get(param.column, "").upper()
+        if not any(m in dt for m in ("INT", "DECIMAL", "DOUBLE", "FLOAT", "REAL", "NUMERIC")):
+            raise TransformError(
+                f"absolute_value needs a numeric column; '{param.column}' is {dt or 'unknown'}"
+            )
+        expr = t.mutate(**{param.column: t[param.column].abs()})
+
     else:
         raise TransformError(f"unsupported structured op '{op}'")
 
@@ -606,6 +634,44 @@ def _build_filldown_sql(table_name: str, columns: List[Tuple[str, str]], param) 
     return f"SELECT * REPLACE ({filled} AS {q}) FROM {table_name}"
 
 
+def _build_updatecell_sql(table_name: str, columns: List[Tuple[str, str]], param) -> str:
+    """update_cell (TASK-041 #5): set ONE cell to a new value, addressed by the stable
+    DuckDB ``rowid`` (the same order /data pages by). Compiles raw SQL over ``rowid``
+    -- like fill_down, an unbound Ibis table has no row identity to target -- using
+    ``SELECT * REPLACE (CASE ... END AS col)`` so only the target column of the target
+    row changes; every other column and the schema are preserved.
+
+    SECURITY: no user string reaches the SQL as raw text. ``column`` is validated
+    against the live schema then quoted; ``rowid`` is coerced to int; the new value is
+    emitted as a single-quoted literal (embedded quotes doubled) wrapped in a strict
+    CAST to the column's OWN type, so a value that can't parse fails closed as a 400
+    (via _materialize) rather than corrupting the column. ``value=None`` clears to NULL.
+    The column type is read from PRAGMA (server-derived), never from the client."""
+    coltypes = {c: d for c, d in columns}
+    if param.column not in coltypes:
+        raise TransformError(f"column '{param.column}' not found")
+    q = _quote_ident(param.column)
+    rid = int(param.rowid)
+    if rid < 0:
+        raise TransformError("rowid must be >= 0")
+    if param.value is None:
+        lit = "NULL"
+    else:
+        text = ("true" if param.value else "false") if isinstance(param.value, bool) else str(param.value)
+        escaped = text.replace("'", "''")
+        # target_type comes from PRAGMA table_info (server-side), so interpolating it
+        # is safe; the value is a doubled-quote literal, so it can't break out either.
+        lit = f"CAST('{escaped}' AS {coltypes[param.column]})"
+    # ORDER BY rowid so the rebuilt table keeps the SAME row order: since update_cell
+    # never adds/removes rows and every table is a CTAS (contiguous rowids 0..n-1),
+    # the target row keeps its rowid across the edit. Displayed rowids therefore stay
+    # valid even before the grid reloads, so successive edits can't hit a stale row.
+    return (
+        f"SELECT * REPLACE (CASE WHEN rowid = {rid} THEN {lit} ELSE {q} END AS {q}) "
+        f"FROM {table_name} ORDER BY rowid"
+    )
+
+
 def _compile_op(table_name: str, columns: List[Tuple[str, str]], param) -> str:
     """Compile any transform op to a single DuckDB SELECT string. Shared by
     apply_transform and preview_transform so both paths validate identically."""
@@ -615,6 +681,8 @@ def _compile_op(table_name: str, columns: List[Tuple[str, str]], param) -> str:
         return _build_filter_sql(table_name, columns, param)
     if param.op == "fill_down":
         return _build_filldown_sql(table_name, columns, param)
+    if param.op == "update_cell":
+        return _build_updatecell_sql(table_name, columns, param)
     return _compile_structured(table_name, columns, param)
 
 

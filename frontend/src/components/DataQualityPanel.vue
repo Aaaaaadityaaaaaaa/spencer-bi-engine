@@ -15,6 +15,9 @@ import {
   Wrench,
   Loader2,
   AlertCircle,
+  EyeOff,
+  Eye,
+  RotateCcw,
 } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import { fetchQualityReport, apiErrorMessage } from '../services/api'
@@ -38,6 +41,56 @@ const expanded = ref(false)
 // when the session changes.
 const userToggled = ref(false)
 
+// --- Ignore / dismiss findings (TASK-041 #7) --------------------------------
+// Frontend-only, localStorage-persisted PER SESSION. A dismissed finding is hidden from
+// the active list (and out of the header counts / auto-expand) but kept so the user can
+// review + restore it. Finding ids are stable ("{code}:{column}"), so a dismissal sticks
+// across re-scans and only a genuinely NEW issue (new id) resurfaces.
+// Declared BEFORE the sessionUuid watch below — its immediate run reads these.
+const ignoredIds = ref<Set<string>>(new Set())
+const showIgnored = ref(false)
+const IGNORE_PREFIX = 'spencer:quality-ignored:'
+
+function loadIgnored(uuid: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(IGNORE_PREFIX + uuid)
+    const arr = raw ? JSON.parse(raw) : null
+    return Array.isArray(arr) ? new Set(arr.filter((x): x is string => typeof x === 'string')) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+function persistIgnored(): void {
+  const uuid = sessionUuid.value
+  if (!uuid) return
+  try {
+    localStorage.setItem(IGNORE_PREFIX + uuid, JSON.stringify([...ignoredIds.value]))
+  } catch {
+    /* storage disabled/full — the in-memory set still holds for this session */
+  }
+}
+function ignoreFinding(f: QualityFinding): void {
+  const next = new Set(ignoredIds.value)
+  next.add(f.id)
+  ignoredIds.value = next
+  persistIgnored()
+}
+function restoreFinding(f: QualityFinding): void {
+  const next = new Set(ignoredIds.value)
+  next.delete(f.id)
+  ignoredIds.value = next
+  persistIgnored()
+}
+
+// The report split by ignore state. `activeFindings` drives the list, header counts, and
+// auto-expand; `ignoredFindings` backs the collapsible "ignored" section.
+const activeFindings = computed<QualityFinding[]>(() =>
+  report.value ? report.value.findings.filter((f) => !ignoredIds.value.has(f.id)) : [],
+)
+const ignoredFindings = computed<QualityFinding[]>(() =>
+  report.value ? report.value.findings.filter((f) => ignoredIds.value.has(f.id)) : [],
+)
+
 // Monotonic guard: only the newest request may write state -- a dataVersion bump can
 // kick off a fresh scan while an older one is still in flight.
 let seq = 0
@@ -52,7 +105,11 @@ async function load(): Promise<void> {
     if (s !== seq) return
     report.value = res
     if (!userToggled.value) {
-      expanded.value = res.findings.some((f) => f.severity === 'high' || f.severity === 'medium')
+      // Auto-expand only for a NON-ignored high/medium issue — a dismissed one shouldn't
+      // keep re-opening the card on every re-scan.
+      expanded.value = res.findings.some(
+        (f) => !ignoredIds.value.has(f.id) && (f.severity === 'high' || f.severity === 'medium'),
+      )
     }
   } catch (e) {
     if (s !== seq) return
@@ -71,6 +128,9 @@ watch(
     error.value = null
     userToggled.value = false
     expanded.value = false
+    // TASK-041 #7: the ignored set is per-session — reload it for the new session.
+    ignoredIds.value = uuid ? loadIgnored(uuid) : new Set()
+    showIgnored.value = false
     if (uuid) void load()
     else seq++ // invalidate any in-flight response
   },
@@ -119,21 +179,21 @@ const OP_LABEL: Record<string, string> = {
   cast: 'Cast type',
   string_normalize: 'Normalize text',
   dedupe: 'Remove duplicates',
+  filter_rows: 'Filter rows',
+  absolute_value: 'Make positive',
 }
 
 // Per-severity counts for the header summary, in severity order, nonzero only.
 const counts = computed<{ severity: QualitySeverity; n: number }[]>(() => {
-  const r = report.value
-  if (!r) return []
   const by = new Map<QualitySeverity, number>()
-  for (const f of r.findings) by.set(f.severity, (by.get(f.severity) ?? 0) + 1)
+  for (const f of activeFindings.value) by.set(f.severity, (by.get(f.severity) ?? 0) + 1)
   return SEV_ORDER.flatMap((s) => {
     const n = by.get(s) ?? 0
     return n ? [{ severity: s, n }] : []
   })
 })
 
-const total = computed(() => report.value?.findings.length ?? 0)
+const total = computed(() => activeFindings.value.length)
 
 // Header alert-icon tone = the highest severity present (counts is already sorted).
 const headerTone = computed(() => {
@@ -163,10 +223,27 @@ function onFix(f: QualityFinding): void {
     req.coerce = true
     req.newType = 'DOUBLE'
   }
+  // TASK-041 #2/#3/#6: newer findings ship a pre-filled param bundle (mixed values →
+  // coercing cast, casing/punctuation variants → normalize, negatives → keep ≥ 0). Pass
+  // it through as `seed` so the dialog opens ready to apply (dry-run preview still gates).
+  if (f.suggested_params) req.seed = f.suggested_params
   emit('fix', req)
 }
 function onProfile(f: QualityFinding): void {
   if (f.column) emit('profile', f.column)
+}
+
+// TASK-042: some findings carry a SECOND remedy (`alt_op`/`alt_params`) — e.g. negative
+// values can be dropped (keep ≥ 0) OR made positive (abs, keeps every row). When present
+// it renders a second Fix button; the wiring mirrors onFix/fixLabel exactly.
+function altLabel(f: QualityFinding): string {
+  return (f.alt_op && OP_LABEL[f.alt_op]) || 'Fix'
+}
+function onFixAlt(f: QualityFinding): void {
+  if (!f.alt_op) return
+  const req: OpRequest = { op: f.alt_op, column: f.column ?? undefined }
+  if (f.alt_params) req.seed = f.alt_params
+  emit('fix', req)
 }
 </script>
 
@@ -182,7 +259,7 @@ function onProfile(f: QualityFinding): void {
       <span class="shrink-0">
         <Loader2 v-if="loading" class="h-4 w-4 animate-spin text-ink-gray-4" />
         <AlertCircle v-else-if="error" class="h-4 w-4 text-ink-red" />
-        <ShieldCheck v-else-if="report && report.ok" class="h-4 w-4 text-ink-green" />
+        <ShieldCheck v-else-if="report && total === 0" class="h-4 w-4 text-ink-green" />
         <ShieldAlert v-else-if="report" class="h-4 w-4" :class="headerTone" />
         <ShieldCheck v-else class="h-4 w-4 text-ink-gray-4" />
       </span>
@@ -203,8 +280,9 @@ function onProfile(f: QualityFinding): void {
         <p class="mt-0.5 truncate text-xs" :class="error && !loading ? 'text-ink-red' : 'text-ink-gray-4'">
           <template v-if="loading">{{ report ? 'Re-scanning the table…' : 'Scanning the table…' }}</template>
           <template v-else-if="error">{{ error }}</template>
-          <template v-else-if="report && report.ok">
-            No issues detected across {{ fmtInt(report.column_count) }} columns · {{ fmtInt(report.row_count) }} rows.
+          <template v-else-if="report && total === 0">
+            <template v-if="ignoredFindings.length">No active issues — {{ ignoredFindings.length }} ignored.</template>
+            <template v-else>No issues detected across {{ fmtInt(report.column_count) }} columns · {{ fmtInt(report.row_count) }} rows.</template>
           </template>
           <template v-else-if="report">
             {{ total }} issue{{ total === 1 ? '' : 's' }} across {{ fmtInt(report.column_count) }} columns · {{ fmtInt(report.row_count) }} rows.
@@ -239,19 +317,20 @@ function onProfile(f: QualityFinding): void {
         <span>{{ error }}</span>
       </div>
 
-      <!-- Clean table -->
+      <!-- Clean table (no findings) OR every finding dismissed -->
       <div
-        v-else-if="report && report.ok"
+        v-else-if="report && total === 0"
         class="flex items-center gap-2 rounded-3 border border-outline-gray-1 bg-surface-gray-1 p-3 text-sm text-ink-green"
       >
         <ShieldCheck class="h-4 w-4 shrink-0" />
-        <span>No quality issues detected — the table looks clean.</span>
+        <span v-if="ignoredFindings.length">No active issues — {{ ignoredFindings.length }} finding{{ ignoredFindings.length === 1 ? '' : 's' }} ignored (shown below).</span>
+        <span v-else>No quality issues detected — the table looks clean.</span>
       </div>
 
       <!-- Findings -->
       <div v-else-if="report" class="space-y-2">
         <div
-          v-for="f in report.findings"
+          v-for="f in activeFindings"
           :key="f.id"
           class="flex items-start gap-3 rounded-3 border border-outline-gray-1 bg-surface-gray-1 p-3"
         >
@@ -277,16 +356,37 @@ function onProfile(f: QualityFinding): void {
             </button>
           </div>
 
-          <button
-            v-if="f.suggested_op"
-            type="button"
-            class="mt-0.5 inline-flex shrink-0 items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-9"
-            :title="`Fix: ${fixLabel(f)}`"
-            @click="onFix(f)"
-          >
-            <Wrench class="h-3.5 w-3.5" />
-            {{ fixLabel(f) }}
-          </button>
+          <div class="mt-0.5 flex shrink-0 items-center gap-1.5">
+            <button
+              v-if="f.suggested_op"
+              type="button"
+              class="inline-flex shrink-0 items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-9"
+              :title="`Fix: ${fixLabel(f)}`"
+              @click="onFix(f)"
+            >
+              <Wrench class="h-3.5 w-3.5" />
+              {{ fixLabel(f) }}
+            </button>
+            <button
+              v-if="f.alt_op"
+              type="button"
+              class="inline-flex shrink-0 items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-9"
+              :title="`Fix: ${altLabel(f)}`"
+              @click="onFixAlt(f)"
+            >
+              <Wrench class="h-3.5 w-3.5" />
+              {{ altLabel(f) }}
+            </button>
+            <button
+              type="button"
+              class="inline-flex shrink-0 items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2 py-1 text-xs font-medium text-ink-gray-5 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-7"
+              title="Ignore — hide this issue (restore it from the list below)"
+              @click="ignoreFinding(f)"
+            >
+              <EyeOff class="h-3.5 w-3.5" />
+              Ignore
+            </button>
+          </div>
         </div>
 
         <!-- Transparency: the compiled DuckDB SQL behind the scan (ADR-012). -->
@@ -294,6 +394,49 @@ function onProfile(f: QualityFinding): void {
           <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-ink-gray-6">Compiled SQL</summary>
           <pre class="overflow-auto border-t border-outline-gray-1 px-3 py-2 text-[11px] leading-relaxed text-ink-gray-7">{{ report.compiled_sql }}</pre>
         </details>
+      </div>
+
+      <!-- Ignored findings (TASK-041 #7): a sibling OUTSIDE the v-if/else-if chain so it
+           shows in both the clean and findings states. Collapsed by default. -->
+      <div v-if="ignoredFindings.length" class="mt-3 border-t border-outline-gray-1 pt-3">
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 text-xs font-medium text-ink-gray-5 transition-colors hover:text-ink-gray-7"
+          :aria-expanded="showIgnored"
+          @click="showIgnored = !showIgnored"
+        >
+          <component :is="showIgnored ? Eye : EyeOff" class="h-3.5 w-3.5" />
+          {{ showIgnored ? 'Hide' : 'Show' }} {{ ignoredFindings.length }} ignored issue{{ ignoredFindings.length === 1 ? '' : 's' }}
+          <component :is="showIgnored ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
+        </button>
+        <div v-if="showIgnored" class="mt-2 space-y-2">
+          <div
+            v-for="f in ignoredFindings"
+            :key="f.id"
+            class="flex items-start gap-3 rounded-3 border border-outline-gray-1 bg-surface-base p-3 opacity-75"
+          >
+            <span
+              class="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+              :class="SEV_CHIP[f.severity]"
+            >
+              <span class="h-1.5 w-1.5 rounded-full" :class="SEV_DOT[f.severity]"></span>
+              {{ SEV_LABEL[f.severity] }}
+            </span>
+            <div class="min-w-0 flex-1">
+              <p class="text-sm font-medium text-ink-gray-7">{{ f.title }}</p>
+              <p class="mt-0.5 text-xs leading-relaxed text-ink-gray-4">{{ f.detail }}</p>
+            </div>
+            <button
+              type="button"
+              class="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2 py-1 text-xs font-medium text-ink-gray-6 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-8"
+              title="Restore — move this issue back to the active list"
+              @click="restoreFinding(f)"
+            >
+              <RotateCcw class="h-3.5 w-3.5" />
+              Restore
+            </button>
+          </div>
+        </div>
       </div>
       </div>
     </div>

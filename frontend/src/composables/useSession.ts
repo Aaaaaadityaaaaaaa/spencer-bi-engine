@@ -8,6 +8,7 @@ import type { ColumnMeta, TransformOp, HistoryStep, SchemaTable } from '../types
 import {
   createSession,
   uploadTable,
+  materializeQuery,
   applyTransform,
   undoTransform,
   redoTransform,
@@ -238,6 +239,34 @@ async function applyOp(op: TransformOp): Promise<boolean> {
   }
 }
 
+// #5 in-cell edit: persist ONE changed cell (addressed by its stable DuckDB rowid)
+// as a real, undoable transform (snapshot + history step server-side) WITHOUT the
+// full grid reload a normal applyOp triggers. A cell edit never changes the schema
+// and keeps every rowid, so we deliberately do NOT bump dataVersion — that would
+// clear the grid's sort/search and scroll it to the top, yanking the user away from
+// the cell they just edited. Instead the grid patches the single cell optimistically
+// and we only refresh undo/redo state. (The whole-table quality scan re-runs on the
+// next transform/undo rather than on every cell edit — re-querying the table per
+// keystroke-commit would be wasteful.) Returns true on success; on failure the caller
+// rolls back its optimistic patch and the message is on state.error.
+async function updateCell(column: string, rowid: number, value: unknown): Promise<boolean> {
+  const uuid = state.sessionUuid
+  if (!uuid || state.applying) return false
+  state.applying = true
+  state.error = null
+  try {
+    const op = { op: 'update_cell', column, rowid, value } as TransformOp
+    await applyTransform(uuid, op, state.tableName ?? undefined)
+    await refreshHistory()
+    return true
+  } catch (e) {
+    state.error = apiErrorMessage(e)
+    return false
+  } finally {
+    state.applying = false
+  }
+}
+
 async function undo(): Promise<void> {
   const uuid = state.sessionUuid
   if (!uuid || state.applying || !state.canUndo) return
@@ -367,13 +396,42 @@ async function addTable(file: File): Promise<boolean> {
   }
 }
 
+// #23: persist a Query Engine result (a reviewed SELECT) as a NEW working table, then make
+// it active — the same "add a table then switch to it" flow as addTable(), but the source
+// is SQL rather than an uploaded file. The server re-validates + tenant-scopes the SQL and
+// CREATE TABLE's the result. Returns the new table_name on success (so the caller can seed
+// a Canvas chart over it) or null on failure; the error (duplicate name, invalid/failed
+// query) is surfaced via state.error for the caller to show. Like setActiveTable this does
+// NOT bump dataVersion, so existing Canvas tiles keep their data (single-active-table,
+// ADR-006) — a freshly-configured tile reads the new `columns` reactively.
+async function materializeResult(sql: string, name?: string | null): Promise<string | null> {
+  const uuid = state.sessionUuid
+  if (!uuid || state.uploading) return null
+  state.uploading = true
+  state.error = null
+  try {
+    const resp = await materializeQuery(uuid, sql, name)
+    const schema = await fetchSchema(uuid)
+    state.tables = schema.tables
+    setActiveTable(resp.table_name)
+    return resp.table_name
+  } catch (e) {
+    state.error = apiErrorMessage(e)
+    return null
+  } finally {
+    state.uploading = false
+  }
+}
+
 export function useSession() {
   return {
     ...toRefs(state),
     upload,
     addTable,
+    materializeResult,
     setActiveTable,
     applyOp,
+    updateCell,
     undo,
     redo,
     refreshHistory,
