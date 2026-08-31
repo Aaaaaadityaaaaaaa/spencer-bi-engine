@@ -76,26 +76,38 @@ function open(op: OpKind): void {
 </script>
 
 <template>
-  <div class="flex flex-wrap items-stretch gap-x-1 gap-y-2 rounded-5 border border-outline-gray-1 bg-surface-base px-3 py-2 shadow-sm">
+  <div class="flex overflow-x-auto items-stretch gap-x-2 rounded-5 border border-outline-gray-2 bg-white px-2 py-2 shadow-sm relative z-10 transition-all hover:shadow-md hide-scrollbar">
     <template v-for="(group, gi) in groups" :key="group.name">
-      <div v-if="gi > 0" class="mx-1 w-px self-stretch bg-outline-gray-1"></div>
-      <div class="flex flex-col">
-        <div class="flex items-center gap-1">
+      <div v-if="gi > 0" class="mx-1 w-px shrink-0 self-stretch bg-gradient-to-b from-transparent via-outline-gray-2 to-transparent opacity-60"></div>
+      <div class="flex flex-col shrink-0">
+        <div class="flex items-start gap-1">
           <button
             v-for="btn in group.buttons"
             :key="btn.op"
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-3 px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-9 disabled:cursor-not-allowed disabled:text-ink-gray-4 disabled:hover:bg-transparent"
+            class="group flex flex-col items-center justify-start gap-1.5 rounded-3 px-2 py-2 w-20 text-center transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-surface-gray-2 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:bg-transparent disabled:hover:shadow-none"
             :disabled="!sessionUuid"
             :title="sessionUuid ? btn.label : 'Load a dataset first'"
             @click="open(btn.op)"
           >
-            <component :is="btn.icon" class="h-3.5 w-3.5 shrink-0" />
-            {{ btn.label }}
+            <component :is="btn.icon" class="h-5 w-5 shrink-0 text-ink-gray-5 transition-colors group-hover:text-primary-6" />
+            <span class="text-[10px] font-semibold leading-tight text-ink-gray-7 group-hover:text-ink-gray-9">{{ btn.label }}</span>
           </button>
         </div>
-        <span class="mt-0.5 px-1 text-[10px] font-medium uppercase tracking-wide text-ink-gray-4">{{ group.name }}</span>
+        <div class="mt-1 flex justify-center pb-1">
+          <span class="text-[9px] font-bold uppercase tracking-wider text-ink-gray-4/80">{{ group.name }}</span>
+        </div>
       </div>
     </template>
   </div>
 </template>
+
+<style scoped>
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+</style>

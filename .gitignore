@@ -20,6 +20,13 @@ backend/spencer.db.wal
 *.duckdb
 # Uploaded files, one dir per session
 backend/uploads/
+# Same two artifacts, at the REPO ROOT: these appear whenever uvicorn is launched
+# from E:/SPENCER V1 instead of from backend/ (the config default UPLOADS_DIR and
+# DuckDB db_path are relative, so they resolve against the cwd). Same data, same
+# rules -- the path-qualified patterns above do not cover them.
+/spencer.db
+/spencer.db.wal
+/uploads/
 # Persistent SQLite identity store (users + dataset ownership): holds real account
 # rows (emails + bcrypt hashes) once anyone registers -- must never be committed.
 backend/spencer_app.db
@@ -42,6 +49,16 @@ Thumbs.db
 # --- Logs ---
 *.log
 npm-debug.log*
+# Dev-server stderr captures (frontend/vite.err, backend/uv.err) — machine-local noise.
+*.err
+
+# --- Assistant tooling artifacts ---
+# Playwright MCP writes console logs + page snapshots here on every browser run.
+# Untracked, regenerated constantly, and can contain test-account credentials typed
+# into forms (a captured login attempt landed here) — never commit it.
+.playwright-mcp/
+# Redis snapshot dropped into the repo root by the portable redis-server.
+dump.rdb
 
 # --- Local dev tooling (portable Redis binaries, ~12MB — not source) ---
 tools/

@@ -330,6 +330,16 @@ class AggregateRequest(BaseModel):
     # aggregation. Empty by default, so a KPI/series request without a slice is
     # unchanged. Column names are validated against the live schema server-side.
     filters: List[AggregateFilter] = Field(default_factory=list)
+    # Scatter mode (Wave 5): when `measure_y` is set, the service returns RAW (x, y)
+    # POINTS instead of a grouped aggregate -- a point cloud over two numeric measures.
+    # `dimension`, if set, is the optional colour/group column (categorical). `aggregation`
+    # is ignored in scatter mode. `top_points` caps the rows returned (server-clamped).
+    measure_y: Optional[str] = None
+    top_points: int = 1000
+    # Box-plot mode (Wave 5): when true, group `measure` by `dimension` and return per-group
+    # [min, Q1, median, Q3, max] stats (DuckDB quantile_cont). `measure` must be numeric and
+    # `dimension` (the category) must be set; `aggregation`/`series`/`measure_y` are ignored.
+    box: bool = False
 
 class AggregateResponse(BaseModel):
     """Result of one aggregation. KPI: keys=[] and values=[<the number>]. Series:
@@ -352,6 +362,12 @@ class AggregateResponse(BaseModel):
     matrix: List[List[Any]] = Field(default_factory=list)
     compiled_sql: str
     truncated: bool
+    # Scatter mode (Wave 5): when the request set `measure_y`, this holds the raw points
+    # as [{x, y, group?}] and keys/values/matrix are empty. None otherwise.
+    points: Optional[List[Dict[str, Any]]] = None
+    # Box-plot mode (Wave 5): when the request set `box`, this holds per-category stats as
+    # [{key, min, q1, median, q3, max}] and keys/values/matrix are empty. None otherwise.
+    boxes: Optional[List[Dict[str, Any]]] = None
 
 # --- Column profiler (Table data-prep / TASK-015) ---------------------------
 class ProfileHistogramBin(BaseModel):

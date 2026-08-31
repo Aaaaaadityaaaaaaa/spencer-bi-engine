@@ -103,15 +103,20 @@ export async function createSession(file: File): Promise<SessionInfo> {
   return data
 }
 
-// POST /sessions/{id}/tables -- add a SECOND (or further) table to an existing session.
-// Multipart; the form field MUST be named `file` (matches upload_table). The table is
-// registered with is_primary=false, so the session then holds multiple tables the user
-// can switch between (ADR-006: switcher only, no cross-table joins).
+// POST /sessions/{id}/tables -- upload a secondary table
 export async function uploadTable(sessionUuid: string, file: File): Promise<TableUploadResponse> {
-  const form = new FormData()
-  form.append('file', file)
-  const { data } = await http.post<TableUploadResponse>(`/sessions/${sessionUuid}/tables`, form)
-  return data
+  const fd = new FormData()
+  fd.append('file', file)
+  const r = await http.post<TableUploadResponse>(`/sessions/${sessionUuid}/tables`, fd)
+  return r.data
+}
+
+export async function deleteTable(sessionUuid: string, tableName: string): Promise<void> {
+  await http.delete(`/sessions/${sessionUuid}/tables/${encodeURIComponent(tableName)}`)
+}
+
+export async function setPrimaryTable(sessionUuid: string, tableName: string): Promise<void> {
+  await http.post(`/sessions/${sessionUuid}/tables/${encodeURIComponent(tableName)}/primary`)
 }
 
 export interface FetchDataParams {

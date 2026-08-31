@@ -133,10 +133,11 @@ const numericStats = computed(() => {
   <!-- Backdrop: click-to-close, light dim so the grid stays visible behind it. -->
   <div v-if="column" class="fixed inset-0 z-40 bg-black/20" @click="emit('close')"></div>
 
-  <aside
-    v-if="column"
-    class="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-outline-gray-1 bg-surface-base shadow-lg"
-  >
+  <Transition name="drawer">
+    <aside
+      v-if="column"
+      class="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-outline-gray-1 bg-surface-base shadow-lg"
+    >
     <!-- Header -->
     <div class="flex items-start justify-between gap-3 border-b border-outline-gray-1 px-4 py-3">
       <div class="min-w-0">
@@ -296,4 +297,5 @@ const numericStats = computed(() => {
       </div>
     </div>
   </aside>
+  </Transition>
 </template>

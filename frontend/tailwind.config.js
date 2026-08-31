@@ -7,10 +7,6 @@ export default {
   ],
   theme: {
     extend: {
-      // Semantic tokens (defined as CSS variables in src/style.css). These map
-      // Frappe UI's design language onto Tailwind utilities: bg-surface-base,
-      // text-ink-gray-8, border-outline-gray-2, bg-primary, etc. Core Tailwind
-      // palettes stay available (extend, not replace).
       colors: {
         surface: {
           base: 'var(--surface-base)',
@@ -18,6 +14,7 @@ export default {
           'gray-2': 'var(--surface-gray-2)',
           'gray-3': 'var(--surface-gray-3)',
           red: 'var(--surface-red-1)',
+          scrim: 'var(--surface-scrim)',
         },
         ink: {
           white: 'var(--ink-white)',
@@ -67,8 +64,27 @@ export default {
         md: 'var(--elevation-md)',
       },
       fontFamily: {
-        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans: ['"Geist"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
+      keyframes: {
+        'fade-in-up': {
+          '0%': { opacity: '0', transform: 'translateY(10px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        'fade-in': {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
+        },
+        'scale-in': {
+          '0%': { opacity: '0', transform: 'scale(0.95)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
+        }
+      },
+      animation: {
+        'fade-in-up': 'fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+        'fade-in': 'fade-in 0.3s ease-out forwards',
+        'scale-in': 'scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+      }
     },
   },
   plugins: [],

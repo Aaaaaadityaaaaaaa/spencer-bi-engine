@@ -11,7 +11,17 @@
 import { onActivated, onBeforeUnmount, onMounted, watch } from 'vue'
 import type { Ref } from 'vue'
 import * as echarts from 'echarts/core'
-import { BarChart, LineChart, PieChart, HeatmapChart, TreemapChart, FunnelChart } from 'echarts/charts'
+import {
+  BarChart,
+  LineChart,
+  PieChart,
+  HeatmapChart,
+  TreemapChart,
+  FunnelChart,
+  ScatterChart,   // TASK-042 fix: ChartTile builds a `type: 'scatter'` series (line 441)
+  BoxplotChart,   // TASK-042 fix: ChartTile builds a `type: 'boxplot'` series (line 731)
+  GaugeChart,     // TASK-042 fix: ChartTile builds a `type: 'gauge'` series (line 748)
+} from 'echarts/charts'
 import {
   DatasetComponent,
   GridComponent,
@@ -30,6 +40,9 @@ echarts.use([
   HeatmapChart,   // TASK-025: 2-D dimension × series grid
   TreemapChart,   // TASK-025: 1-D nested-area alternative to pie
   FunnelChart,    // TASK-025: 1-D ranked-stage view
+  ScatterChart,   // TASK-042 fix: previously rendered blank (unregistered)
+  BoxplotChart,   // TASK-042 fix: previously rendered blank (unregistered)
+  GaugeChart,     // TASK-042 fix: previously rendered blank (unregistered)
   GridComponent,
   TooltipComponent,
   LegendComponent,

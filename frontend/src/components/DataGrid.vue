@@ -3,20 +3,49 @@ import { ref, computed, watch, onActivated, nextTick } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import {
   Loader2, MoreVertical, Download, Eye, BarChart3, ChevronDown,
-  ArrowUp, ArrowDown, Pin, Search, X, RotateCcw, Plus,
+  ArrowUp, ArrowDown, Pin, Search, X, RotateCcw, Plus, Copy,
+  Rows3, Rows4,
 } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import { fetchData, exportTable, apiErrorMessage, blobErrorMessage } from '../services/api'
 import type { ExportFormat } from '../services/api'
-import { downloadBlob, exportFilename } from '../utils/csvExport'
+import { downloadBlob, exportFilename, copyToClipboard } from '../utils/csvExport'
 import { friendlyTableName } from '../utils/tableName'
+import { useToasts } from '../composables/useToast'
 import type { DataColumn, OpKind, OpRequest, SortSpec } from '../types'
 
 // Window size for one fetch: matches the backend's default `limit` and is the
 // infinite-scroll page size (the backend clamps anything above 1000).
 const PAGE = 500
-const ROW_H = 36   // px; fixed row height -> no per-row measurement needed
+const ROW_H_COMFY = 36   // px; comfortable default row height
+const ROW_H_COMPACT = 26 // px; compact density for tight scans of wide tables
 const COL_W = 160  // px; fixed column width -> header/body columns stay aligned
+
+// Per-user row density (Batch 3 / Table). Persists in localStorage so the choice
+// survives reloads. 'compact' shows ~30% more rows per screen; 'comfy' (default)
+// is the readable baseline.
+type Density = 'compact' | 'comfy'
+const DENSITY_KEY = 'spencer.grid.density'
+function loadDensity(): Density {
+  try {
+    const v = localStorage.getItem(DENSITY_KEY)
+    return v === 'compact' ? 'compact' : 'comfy'
+  } catch {
+    return 'comfy'
+  }
+}
+const density = ref<Density>(loadDensity())
+const ROW_H = computed(() => (density.value === 'compact' ? ROW_H_COMPACT : ROW_H_COMFY))
+watch(density, (v) => { try { localStorage.setItem(DENSITY_KEY, v) } catch { /* storage may be disabled */ } })
+
+// Numeric column types are right-aligned with tabular-nums so amounts and quantities
+// line up vertically (much easier to scan, much harder to mis-read). Includes the
+// integer/float family DuckDB reports plus dates — dates are right-aligned so time
+// series look right.
+const NUMERIC_TYPES = new Set(['BIGINT', 'INTEGER', 'SMALLINT', 'TINYINT', 'HUGEINT', 'DOUBLE', 'FLOAT', 'REAL', 'DECIMAL', 'NUMERIC', 'DATE', 'TIMESTAMP'])
+function isNumericType(t: string | undefined): boolean {
+  return !!t && NUMERIC_TYPES.has(t.toUpperCase())
+}
 
 const { sessionUuid, tableName, fileName, dataVersion, tables, uploading, error, setActiveTable, addTable, updateCell } = useSession()
 
@@ -117,6 +146,22 @@ function chooseProfile(): void {
   if (col) emit('profile-column', col)
 }
 
+// #Batch12: copy a column's values to the clipboard from the header ⋮ menu — a fast way
+// to reuse a column elsewhere (paste into the SQL editor, a sheet, a prompt). Copies the
+// currently-loaded rows (the visible window), one value per line; the toast states exactly
+// how many so nothing is silently truncated on a paginated table. Uses the shared, never-
+// throwing clipboard helper.
+const { pushToast } = useToasts()
+async function copyColumn(): Promise<void> {
+  const col = menuCol.value
+  menuCol.value = null
+  if (!col) return
+  const vals = rows.value.map((r) => cell(r, col))
+  const ok = await copyToClipboard(vals.join('\n'))
+  if (ok) pushToast(`Copied ${vals.length} values from "${col}"`, 'success')
+  else pushToast('Could not copy — select and copy manually', 'error')
+}
+
 const rows = ref<Record<string, unknown>[]>([])
 const columns = ref<DataColumn[]>([])
 const total = ref(0)
@@ -195,7 +240,7 @@ const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>(
   computed(() => ({
     count: rows.value.length,
     getScrollElement: () => scrollEl.value,
-    estimateSize: () => ROW_H,
+    estimateSize: () => ROW_H.value,
     // Overscan buffers rows above/below the viewport. It has to be generous here
     // because the browser scrolls this container on the COMPOSITOR thread and
     // delivers 'scroll' events to the main thread late/batched: during a fast fling
@@ -734,6 +779,40 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
         >
           <RotateCcw class="h-3.5 w-3.5" /> Reset view
         </button>
+        <!-- Row density (Batch 3 / Table). Two visual modes that re-flow the whole grid
+             instantly; persists across reloads. -->
+        <div
+          v-if="sessionUuid"
+          class="inline-flex overflow-hidden rounded-2 border border-outline-gray-2"
+          role="group"
+          aria-label="Row density"
+          title="Row density"
+        >
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors"
+            :class="density === 'compact'
+              ? 'bg-surface-gray-2 text-ink-gray-9'
+              : 'bg-surface-base text-ink-gray-5 hover:text-ink-gray-8'"
+            :aria-pressed="density === 'compact'"
+            title="Compact rows"
+            @click.stop="density = 'compact'"
+          >
+            <Rows3 class="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 border-l border-outline-gray-2 px-2 py-1 text-xs font-medium transition-colors"
+            :class="density === 'comfy'
+              ? 'bg-surface-gray-2 text-ink-gray-9'
+              : 'bg-surface-base text-ink-gray-5 hover:text-ink-gray-8'"
+            :aria-pressed="density === 'comfy'"
+            title="Comfortable rows"
+            @click.stop="density = 'comfy'"
+          >
+            <Rows4 class="h-3.5 w-3.5" />
+          </button>
+        </div>
         <button
           v-if="sessionUuid"
           type="button"
@@ -802,6 +881,7 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
               meta.pinned ? 'z-[5] bg-surface-gray-1' : '',
               dragOverCol === meta.col.name ? 'ring-2 ring-inset ring-primary' : '',
               dragCol === meta.col.name ? 'opacity-50' : '',
+              isNumericType(meta.col.type) ? 'justify-end' : '',
             ]"
             :style="headerCellStyle(meta)"
             draggable="true"
@@ -815,9 +895,17 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
             <Pin v-if="meta.pinned" class="h-3 w-3 shrink-0 text-primary" />
             <span
               class="truncate text-xs font-semibold text-ink-gray-7"
+              :class="isNumericType(meta.col.type) ? 'tabular-nums' : ''"
             >
               {{ meta.col.name }}
             </span>
+            <!-- Type chip (Batch 3 / Table) — small uppercase pill so the user can
+                 read the column type at a glance without hovering. -->
+            <span
+              v-if="meta.col.type"
+              class="shrink-0 rounded-2 px-1 text-[9px] font-medium uppercase tracking-wide text-ink-gray-4"
+              :title="`${meta.col.name} · ${meta.col.type}`"
+            >{{ meta.col.type }}</span>
             <span
               v-if="sortInfo(meta.col.name)"
               class="inline-flex shrink-0 items-center text-primary"
@@ -851,7 +939,11 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
               v-for="meta in displayCols"
               :key="meta.col.name"
               class="relative shrink-0 truncate px-3 py-2 text-xs text-ink-gray-8"
-              :class="[meta.pinned ? 'z-[5] bg-surface-base' : '', isEditing(vRow.index, meta.col.name) ? '' : 'cursor-text']"
+              :class="[
+                meta.pinned ? 'z-[5] bg-surface-base' : '',
+                isEditing(vRow.index, meta.col.name) ? '' : 'cursor-text',
+                isNumericType(meta.col.type) ? 'text-right tabular-nums' : '',
+              ]"
               :style="bodyCellStyle(meta, rows[vRow.index])"
               :title="isEditing(vRow.index, meta.col.name) ? '' : cell(rows[vRow.index], meta.col.name)"
               @dblclick="startEdit(vRow.index, meta.col.name)"
@@ -862,6 +954,7 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
                 v-model="editValue"
                 type="text"
                 class="absolute inset-0 z-10 w-full border border-primary bg-surface-base px-3 text-xs text-ink-gray-9 focus:outline-none"
+                :class="isNumericType(meta.col.type) ? 'text-right tabular-nums' : ''"
                 @keydown.enter.prevent="commitEdit"
                 @keydown.esc.prevent="cancelEdit"
                 @blur="commitEdit"
@@ -916,6 +1009,13 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
         @click="chooseProfile"
       >
         <BarChart3 class="h-3.5 w-3.5 text-primary" /> Profile column
+      </button>
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium text-ink-gray-8 transition-colors hover:bg-surface-gray-2"
+        @click="copyColumn"
+      >
+        <Copy class="h-3.5 w-3.5 text-ink-gray-5" /> Copy column values
       </button>
       <div class="my-1 border-t border-outline-gray-1"></div>
       <button

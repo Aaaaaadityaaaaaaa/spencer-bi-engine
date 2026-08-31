@@ -37,6 +37,7 @@ from models.schemas import (
 from services.duckdb_manager import db_manager
 from services.redis_manager import redis_manager
 from services.sql_validator import sql_validator
+from services.alias_service import resolve_aliases
 from services.ai_service import (
     ai_service,
     LLMError,
@@ -168,6 +169,11 @@ async def execute_query(session_uuid: str, payload: ExecuteRequest):
     MAX_ROWS with a `truncated` flag. The documented async query_id/poll/MessagePack
     path (/queries/{id} below) stays deferred."""
     sql = (payload.sql or "").strip()
+    # B (user choice): let the user write the ORIGINAL table name instead of the long
+    # t_<uuid>_ physical name. Rewritten AST-level to the physical name before validation,
+    # so the tenant-isolation gate still runs on real physical names. AI-generated SQL (which
+    # already uses physical names) is unaffected.
+    sql = await resolve_aliases(sql, session_uuid)
     if not sql_validator.validate(sql):
         raise HTTPException(
             status_code=400,

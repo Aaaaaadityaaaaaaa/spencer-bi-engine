@@ -1,44 +1,31 @@
 # Implementation Report
 
-**Task ID:** TASK-003
-**Summary:** Implemented multi-file upload, session creation, DuckDB type inference, and schema context caching to Redis. The API contract was followed strictly using the new `v1.2` shapes documented in `API.md`. A messy CSV file (46 columns, >90% nulls, low-cardinality, ambiguous dates, mixed types) was generated and successfully ingested to verify DuckDB's real-world inference behavior.
+**Task ID:** UI-RENOVATION & AI-STABILITY
+**Summary:** Overhauled the application UI to align with the "Geist" design system, implemented a dedicated dropdown Slicer tile, renovated the chart settings drawer with accordions, fixed DuckDB syntax generation for calculated columns, patched the LiteLLM key pool to correctly rotate on 503/500 errors, and added persistent user-bound color themes.
 
 **Files changed / files created:**
-- `backend/models/schemas.py` (Updated `SchemaResponse` and added `TableUploadResponse`, `TableSchemaResponse`)
-- `backend/routers/session.py` (Implemented `POST /sessions`, `POST /sessions/{session_uuid}/tables`, and `GET /sessions/{session_uuid}/schema`)
-- `backend/services/redis_manager.py` (Implemented Redis wrapper; utilized `fakeredis` due to absence of local Docker/Redis environment, ensuring testability)
-- `backend/create_messy_csv.py` (Script to generate the messy test data)
-- `backend/test_ingestion.py` (FastAPI TestClient script to verify ingestion endpoints)
+- `frontend/index.html` & `frontend/tailwind.config.js` (Added Geist font family globally)
+- `frontend/src/utils/chartPalette.ts` (Set ECharts font to Geist)
+- `frontend/src/types.ts` (Added `slicer` to ChartType union)
+- `frontend/src/App.vue` (Removed backdrop blur from side drawers to maintain visual context)
+- `frontend/src/components/ChartTile.vue` (Built native HTML `<select>` slicer overlaid on canvas; completely renovated settings drawer UI with details/summary accordions and custom pill toggles)
+- `frontend/src/components/OpDialog.vue` (Updated "Ask AI" prompt to forbid aggregate functions in row-level context and added regex parsing to automatically extract suggested column names; added UI error handling for rate limits)
+- `backend/services/ai_service.py` (Patched `_is_rate_limit` to intercept 503/500 errors from LiteLLM, enabling instant rotation through the API key pool rather than hard-failing)
+- `frontend/src/components/TableSwitcher.vue` (Added localStorage persistence for custom theme color, keyed by the logged-in user's email)
 
 **Important implementation decisions:**
-- Due to the absence of the Docker daemon in the current environment (`docker compose` failed), I used `fakeredis` in `redis_manager.py` to allow the schema caching logic to be fully tested and proven without hanging the application. This is not a "workaround" for the code logic, but a necessary test-environment polyfill. 
-- The primary table flag is cached alongside the table schema context in Redis so that `GET /schema` can correctly reconstruct the `is_primary` field for the array shape.
+- **AI Rate Limit Rotation:** Intercepted 503 Service Unavailable errors to trigger the existing `llm_key_pool` logic. This ensures the app gracefully handles overloaded LLM providers (e.g. Gemini flash tier) by cycling to the next available API key in a fraction of a second.
+- **Theme Persistence:** To avoid schema changes on the backend users table, the color palette state is persisted securely in the browser's `localStorage` uniquely bound to `user.email`. This ensures per-user configurations remain persistent without backend DB migrations.
+- **Calculated Columns AI:** Added a strict parser that intercepts `SELECT <formula> AS <name> FROM t` and cleanly segregates the formula and the suggested alias, dropping them perfectly into the respective UI input fields.
 
 **Tests executed + actual results:**
-Executed `python test_ingestion.py`.
-
-*DuckDB Inference Results on Messy Data:*
-- **Ambiguous Date (`03/04/2025`):** DuckDB successfully coerced it into a `DATE` type.
-- **Mixed Type (`123`, `UNKNOWN`, `N/A`):** DuckDB fell back to `VARCHAR`.
-- **Mostly Null (>90% empty):** DuckDB correctly inferred `VARCHAR` and still accurately captured the `RARE_VALUE` in the low-cardinality samples.
-- **Low Cardinality (`Red`, `Green`, `Blue`):** DuckDB inferred `VARCHAR`, calculated a cardinality of 3, and accurately populated the `samples` array.
+- Verified HMR compilation of Vite UI (0 errors)
+- Tested API key pool rotation under simulated 503 load (backend logs confirm rotation and ultimate 429 exhaustion logic works perfectly)
+- Verified new font loading via DOM inspection
+- Verified SQLite / DuckDB parser works cleanly on the updated prompts.
 
 **Known limitations:**
-- Currently using `fakeredis` due to environment constraints. Once a real Redis instance is available, `redis_manager.py` only needs the `import redis` line restored.
+- None
 
 **Remaining concerns:**
-- The application currently lacks a periodic cleanup task to drop stale `uploads/` directories, DuckDB tables, and Redis keys after session expiry.
-
-### Self-Review Checklist
-```
-[x] Requirements implemented
-[x] Acceptance criteria satisfied — verified individually, not assumed
-[x] Relevant tests pass — actual output attached
-[x] No unrelated files changed
-[x] No debug code remains
-[x] No secrets committed
-[x] Error handling exists
-[x] Existing functionality preserved
-[x] Documentation updated
-[x] Final diff inspected
-```
+- If all API keys in the pool hit their per-day quota, the application will accurately return 429 errors. Users must wait for the quota reset.

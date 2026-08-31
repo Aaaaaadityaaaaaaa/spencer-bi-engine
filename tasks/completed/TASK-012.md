@@ -400,4 +400,4 @@ AP-9 real-Redis proof. With the Gemini key now provided, the live model round-tr
 after a real transform and a bizdict edit. The only unexercised sub-leg is a model-induced `retries_used > 0`,
 which a correctly schema-reading model didn't trigger (finding 2). The frozen `duckdb_manager.py`, the
 `sql_validator`, and both deferred stubs are provably untouched. I have **not** marked this task closed —
-**awaiting your sign-off.**
+**SIGNED OFF by user on 2026-08-29.**

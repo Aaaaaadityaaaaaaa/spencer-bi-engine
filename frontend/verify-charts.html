@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>chart-verify</title>
+    <style>
+      body { font: 14px sans-serif; margin: 12px; }
+      #wrap { display: flex; gap: 8px; }
+      .c { width: 300px; height: 220px; border: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <div id="scatter" class="c"></div>
+      <div id="boxplot" class="c"></div>
+      <div id="gauge" class="c"></div>
+    </div>
+    <script type="module">
+      // Importing the real composable runs its module-scope `echarts.use([...])`
+      // registration on the shared echarts/core singleton -- this is the exact
+      // code path the app uses, so a pass here proves the fix end-to-end.
+      import '/src/composables/useEchart.ts'
+      import * as echarts from 'echarts/core'
+
+      const opts = {
+        scatter: { xAxis: {}, yAxis: {}, series: [{ type: 'scatter', data: [[1, 2], [2, 3], [3, 1], [4, 5]] }] },
+        boxplot: { xAxis: { type: 'category', data: ['g1'] }, yAxis: {}, series: [{ type: 'boxplot', data: [[1, 2, 3, 4, 5]] }] },
+        gauge: { series: [{ type: 'gauge', min: 0, max: 100, data: [{ value: 62 }] }] },
+      }
+      const res = {}
+      for (const [k, o] of Object.entries(opts)) {
+        const el = document.getElementById(k)
+        const c = echarts.init(el)
+        c.setOption(o)
+        // Length of the PNG data URL is a proxy for "something was drawn".
+        res[k] = c.getDataURL({ type: 'png', pixelRatio: 1, backgroundColor: '#fff' }).length
+        c.dispose()
+      }
+      window.__verify = res
+      document.title = 'verify-done'
+    </script>
+  </body>
+</html>

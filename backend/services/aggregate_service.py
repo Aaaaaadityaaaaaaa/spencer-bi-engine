@@ -124,6 +124,122 @@ def _apply_filters(t, colnames, filters):
     return t
 
 
+async def _aggregate_scatter(table_name, columns, colnames, dimension, measure, measure_y, top_points, filters) -> Dict[str, Any]:
+    """Wave 5 scatter: SELECT x=measure, y=measure_y [, group=dimension] FROM t, ordered
+    by y DESC and capped at top_points -- a point cloud, not a grouped aggregate. Fail-closed
+    column + numeric-measure validation; the colour column is optional and any-typed."""
+    if measure is None:
+        raise AggregateError("scatter requires an X measure column")
+    if measure not in colnames:
+        raise AggregateError(f"column '{measure}' not found")
+    if measure_y not in colnames:
+        raise AggregateError(f"column '{measure_y}' not found")
+    if dimension is not None and dimension not in colnames:
+        raise AggregateError(f"column '{dimension}' not found")
+    for f in (filters or []):
+        if f.column not in colnames:
+            raise AggregateError(f"filter column '{f.column}' not found")
+
+    t = _unbound(table_name, columns)
+    t = _apply_filters(t, colnames, filters)
+    if not t[measure].type().is_numeric():
+        raise AggregateError(f"scatter X needs a numeric column; '{measure}' is {t[measure].type()}")
+    if not t[measure_y].type().is_numeric():
+        raise AggregateError(f"scatter Y needs a numeric column; '{measure_y}' is {t[measure_y].type()}")
+
+    sel: Dict[str, Any] = {"x": t[measure], "y": t[measure_y]}
+    if dimension is not None:
+        sel["group"] = t[dimension]
+    expr = t.select(**sel).order_by(t[measure_y].desc()).limit(top_points)
+    sql = ibis.to_sql(expr, dialect="duckdb")
+    logger.debug("aggregate scatter: %s", sql)
+    rows = await db_manager.run_readwrite(sql) or []
+    pts: List[Dict[str, Any]] = []
+    for r in rows:
+        pt: Dict[str, Any] = {"x": _jsonable(r[0]), "y": _jsonable(r[1])}
+        if dimension is not None:
+            pt["group"] = _jsonable(r[2]) if len(r) > 2 else None
+        pts.append(pt)
+    return {
+        "dimension": dimension,
+        "series": None,
+        "measure": measure,
+        "aggregation": "raw",
+        "keys": [],
+        "values": [],
+        "series_keys": [],
+        "matrix": [],
+        "points": pts,
+        "compiled_sql": sql,
+        "truncated": len(rows) >= top_points,
+    }
+
+
+async def _aggregate_box(table_name, columns, colnames, dimension, measure, limit, filters) -> Dict[str, Any]:
+    """Wave 5 box plot: GROUP BY `dimension` (the category) and return per-group
+    [min, Q1, median, Q3, max] over a numeric `measure` (DuckDB quantile_cont). The top-N
+    categories by row count are kept; the result is `boxes: [{key, min, q1, median, q3, max}]`
+    with keys/values/matrix empty. Fail-closed validation: a category + numeric measure are required."""
+    if dimension is None:
+        raise AggregateError("box plot needs a category dimension (the x-axis boxes)")
+    if measure is None:
+        raise AggregateError("box plot needs a numeric measure")
+    if dimension not in colnames:
+        raise AggregateError(f"column '{dimension}' not found")
+    if measure not in colnames:
+        raise AggregateError(f"column '{measure}' not found")
+    for f in (filters or []):
+        if f.column not in colnames:
+            raise AggregateError(f"filter column '{f.column}' not found")
+
+    t = _unbound(table_name, columns)
+    t = _apply_filters(t, colnames, filters)
+    if not t[measure].type().is_numeric():
+        raise AggregateError(f"box plot needs a numeric measure; '{measure}' is {t[measure].type()}")
+
+    # quantile_cont needs literal floats; Ibis emits them as typed params (ADR-012).
+    expr = (
+        t.group_by(dimension)
+        .aggregate(
+            q1=t[measure].quantile(0.25),
+            median=t[measure].quantile(0.5),
+            q3=t[measure].quantile(0.75),
+            mn=t[measure].min(),
+            mx=t[measure].max(),
+            n=t.count(),
+        )
+        .order_by(ibis.desc("n"))
+        .limit(limit)
+    )
+    sql = ibis.to_sql(expr, dialect="duckdb")
+    logger.debug("aggregate box: %s", sql)
+    rows = await db_manager.run_readwrite(sql) or []
+    boxes: List[Dict[str, Any]] = []
+    for r in rows:
+        boxes.append({
+            "key": _jsonable(r[0]),
+            "min": _jsonable(r[4]),
+            "q1": _jsonable(r[1]),
+            "median": _jsonable(r[2]),
+            "q3": _jsonable(r[3]),
+            "max": _jsonable(r[5]),
+            "n": _jsonable(r[6]),
+        })
+    return {
+        "dimension": dimension,
+        "series": None,
+        "measure": measure,
+        "aggregation": "box",
+        "keys": [],
+        "values": [],
+        "series_keys": [],
+        "matrix": [],
+        "boxes": boxes,
+        "compiled_sql": sql,
+        "truncated": len(rows) >= limit,
+    }
+
+
 def _isin_pred(col, values):
     """Ibis predicate for ``col IN (values)`` that also matches NULL when None is in
     the list. `values` are RAW DuckDB scalars (a date stays a ``date``), so Ibis emits
@@ -152,6 +268,25 @@ async def aggregate(table_name: str, req) -> Dict[str, Any]:
     series_dim: Optional[str] = getattr(req, "series", None)
     measure: Optional[str] = req.measure
     aggregation: str = req.aggregation
+
+    # Scatter mode (Wave 5): return RAW (x, y) points over two numeric measures.
+    # `dimension` (if set) is an optional colour/group column; aggregation is ignored.
+    measure_y: Optional[str] = getattr(req, "measure_y", None)
+    if measure_y is not None:
+        top_points = max(1, min(int(getattr(req, "top_points", 1000) or 1000), 5000))
+        return await _aggregate_scatter(
+            table_name, columns, colnames, dimension, measure, measure_y, top_points,
+            getattr(req, "filters", None),
+        )
+
+    # Box-plot mode (Wave 5): per-category [min, Q1, median, Q3, max] over a numeric measure.
+    # `dimension` is the required category; `aggregation`/`series`/`measure_y` are ignored.
+    if getattr(req, "box", False):
+        box_limit = max(1, min(int(getattr(req, "limit", DEFAULT_LIMIT) or DEFAULT_LIMIT), MAX_CATEGORIES))
+        return await _aggregate_box(
+            table_name, columns, colnames, dimension, measure, box_limit,
+            getattr(req, "filters", None),
+        )
 
     t = _unbound(table_name, columns)
     _validate(t, colnames, dimension, series_dim, measure, aggregation)

@@ -219,4 +219,4 @@ Severity scale: **Critical / High / Medium / Low / Info.**
 relocated DataGrid virtualizer fires the `offset=500` window (§D) — the load-bearing regression is
 proven, not assumed. Backend and `duckdb_manager.py` are provably untouched. Two conscious deviations
 (findings 2, 3) and the roadmap reorder (4) are flagged, not hidden. I have **not** marked this task
-closed nor touched `README.md` / `.ai/CURRENT_STATE.md` — **awaiting your sign-off.**
+closed nor touched `README.md` / `.ai/CURRENT_STATE.md` — **SIGNED OFF by user on 2026-08-29.**

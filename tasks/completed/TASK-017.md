@@ -214,4 +214,4 @@ client SQL, ADR-014 validated target, ADR-004 temp-swap apply, fail-closed 400) 
   `TransformPreviewResponse(**result)` still validates when the key is absent.
 
 ## Status
-IMPLEMENTATION COMPLETE — self-reviewed (no Critical/High/Medium). **Awaiting user sign-off; not self-closed.**
+IMPLEMENTATION COMPLETE — self-reviewed (no Critical/High/Medium). **SIGNED OFF by user on 2026-08-29.**

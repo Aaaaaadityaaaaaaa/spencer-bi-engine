@@ -2,83 +2,87 @@
 @tailwind components;
 @tailwind utilities;
 
-/*
- * Semantic design tokens mirrored from Frappe UI (the design language behind
- * Frappe Insights). Values are Frappe's own oklch neutrals + blue accent,
- * numbered radii, and multi-layer elevation shadows. Exposed to Tailwind as
- * named colors in tailwind.config.js (surface / ink / outline / primary, plus
- * radius + shadow scales). Light-only for now; the [data-theme="dark"] block is
- * wired so a later task can drop dark values in without touching components.
- */
 :root {
-  /* surfaces (backgrounds) */
-  --surface-base: oklch(1 0 0);           /* cards, elevated */
-  --surface-gray-1: oklch(0.979 0 0);     /* page / sidebar */
-  --surface-gray-2: oklch(0.964 0 0);     /* input bg, subtle hover */
-  --surface-gray-3: oklch(0.946 0 0);     /* deeper hover / active nav */
+  /* Premium Zinc/Slate Palette */
+  --surface-base: #ffffff;
+  --surface-gray-1: #f4f4f5; /* App background (zinc-100) */
+  --surface-gray-2: #fcfcfc; /* Cards/modals */
+  --surface-gray-3: #e4e4e7; /* Hover states */
+  --surface-red-1: #fef2f2;
+  --surface-scrim: rgba(9, 9, 11, 0.4);
 
-  /* ink (text) */
-  --ink-white: oklch(1 0 0);
-  --ink-gray-3: oklch(0.83 0 0);          /* faint */
-  --ink-gray-4: oklch(0.683 0 0);         /* placeholder / disabled */
-  --ink-gray-5: oklch(0.586 0 0);         /* muted / counts */
-  --ink-gray-6: oklch(0.439 0 0);         /* secondary / labels */
-  --ink-gray-7: oklch(0.341 0 0);         /* strong secondary */
-  --ink-gray-8: oklch(0.205 0 0);         /* body */
-  --ink-gray-9: oklch(0.168 0 0);         /* headings */
+  --ink-white: #ffffff;
+  --ink-gray-3: #a1a1aa; /* zinc-400 */
+  --ink-gray-4: #71717a; /* zinc-500 */
+  --ink-gray-5: #52525b; /* zinc-600 */
+  --ink-gray-6: #3f3f46; /* zinc-700 */
+  --ink-gray-7: #27272a; /* zinc-800 */
+  --ink-gray-8: #18181b; /* zinc-900 */
+  --ink-gray-9: #09090b; /* zinc-950 */
+  
+  --ink-red-6: #e11d48; /* rose-600 */
+  --ink-green-7: #15803d; /* green-700 */
+  --ink-amber-7: #b45309; /* amber-700 */
 
-  /* outline (borders) */
-  --outline-gray-1: oklch(0.946 0 0);     /* default border */
-  --outline-gray-2: oklch(0.913 0 0);     /* stronger border */
-  --outline-gray-3: oklch(0.83 0 0);      /* hover border / dashed dropzone */
-  --outline-gray-4: oklch(0.683 0 0);     /* focus border */
+  --outline-gray-1: #e4e4e7; /* zinc-200 */
+  --outline-gray-2: #d4d4d8; /* zinc-300 */
+  --outline-gray-3: #a1a1aa; /* zinc-400 */
+  --outline-gray-4: #71717a; /* zinc-500 */
+  --outline-red-2: #fecdd3; /* rose-200 */
 
-  /* primary accent = Frappe blue */
-  --primary-1: oklch(0.976 0.011 243.65);   /* tint bg */
-  --primary-2: oklch(0.96 0.021 241.348);   /* tint bg / active nav */
-  --primary-3: oklch(0.88 0.061 242.553);   /* tint border */
-  --primary-5: oklch(0.641 0.186 251.565);  /* accent / link / drag border */
-  --primary-6: oklch(0.587 0.174 252.167);  /* button default */
-  --primary-7: oklch(0.561 0.168 252.355);  /* button hover */
+  /* Primary Accent: Dynamic via --primary-5 */
+  --primary-5: #83bfc8; /* Default Teal/Cyan */
+  --primary-1: color-mix(in srgb, var(--primary-5) 20%, white);
+  --primary-2: color-mix(in srgb, var(--primary-5) 40%, white);
+  --primary-3: color-mix(in srgb, var(--primary-5) 60%, white);
+  --primary-6: color-mix(in srgb, var(--primary-5) 85%, black);
+  --primary-7: color-mix(in srgb, var(--primary-5) 70%, black);
 
-  /* semantic red (errors) */
-  --surface-red-1: oklch(0.978 0.011 17.34);
-  --outline-red-2: oklch(0.915 0.044 17.978);
-  --ink-red-6: oklch(0.556 0.198 26.552);
+  /* Modern Radius Scale */
+  --radius-1: 0.375rem; /* rounded-md */
+  --radius-2: 0.5rem;   /* rounded-lg */
+  --radius-3: 0.75rem;  /* rounded-xl */
+  --radius-4: 1rem;     /* rounded-2xl */
+  --radius-5: 1.5rem;   /* rounded-3xl */
+  --radius-6: 2rem;     
+  --radius-7: 9999px;   /* rounded-full */
 
-  /* semantic green / amber (status + future charts) */
-  --ink-green-7: oklch(0.53 0.122 156.15);
-  --ink-amber-7: oklch(0.612 0.136 63.758);
-
-  /* radius scale (Frappe numbered) */
-  --radius-1: 4px;
-  --radius-2: 5px;
-  --radius-3: 6px;
-  --radius-4: 8px;
-  --radius-5: 10px;
-  --radius-6: 12px;
-  --radius-7: 16px;
-
-  /* elevation (border-led; subtle multi-layer, inset highlight) */
-  --elevation-sm: inset 0px 0.25px 1.5px 0px #ffffff29, 0px 0px 1px 0px #00000033, 0px 1px 3px 0px #00000024;
-  --elevation-base: inset 0px 0.25px 1.5px 0px #ffffff29, 0px 0px 1.5px 0px #00000029, 0px 2px 5px 0px #00000024;
-  --elevation-md: inset 0px 0.25px 1.5px 0px #ffffff29, 0px 0px 1.5px 0px #00000026, 0px 0px 6px 2px #0000000a, 0px 6px 12px -2px #00000014;
-
-  /* focus ring */
-  --focus-ring: 0px 0px 0px 2px oklch(0.83 0 0 / 0.9);
+  /* S-Tier Shadows */
+  --elevation-sm: 0 2px 4px rgba(0, 0, 0, 0.02), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --elevation-base: 0 4px 12px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03);
+  --elevation-md: 0 12px 24px -4px rgba(0, 0, 0, 0.08), 0 4px 8px -4px rgba(0, 0, 0, 0.04);
 }
 
-/* Dark theme deferred to a later task; selector wired now so it's a drop-in. */
-[data-theme="dark"] {
-  /* intentionally empty for TASK-008 (light-only) */
+[data-theme='dark'] {
+  --surface-base: #09090b;
+  --surface-gray-1: #000000;
+  --surface-gray-2: #18181b;
+  --surface-gray-3: #27272a;
+  
+  --ink-gray-3: #52525b;
+  --ink-gray-4: #71717a;
+  --ink-gray-5: #a1a1aa;
+  --ink-gray-6: #d4d4d8;
+  --ink-gray-7: #e4e4e7;
+  --ink-gray-8: #f4f4f5;
+  --ink-gray-9: #ffffff;
+
+  --outline-gray-1: #27272a;
+  --outline-gray-2: #3f3f46;
+  --outline-gray-3: #52525b;
 }
 
-@layer base {
-  html {
-    font-family: theme('fontFamily.sans');
-    color: var(--ink-gray-8);
-    background-color: var(--surface-gray-1);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 justify-center rounded-3 px-3 py-1.5 text-sm font-semibold transition-all duration-300 ease-out border border-transparent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none;
+  }
+  .btn-ghost {
+    @apply text-ink-gray-7 bg-white border-outline-gray-2 shadow-sm hover:bg-surface-gray-2 hover:text-ink-gray-9 hover:-translate-y-0.5 hover:shadow-md;
+  }
+  .btn-primary {
+    @apply bg-primary-6 text-white shadow-sm hover:bg-primary-7 hover:-translate-y-0.5 hover:shadow-md;
+  }
+  .btn-dashed {
+    @apply border-dashed border-outline-gray-3 text-ink-gray-6 bg-transparent hover:border-primary-5 hover:text-primary-6 hover:-translate-y-0.5 hover:shadow-sm hover:bg-white;
   }
 }

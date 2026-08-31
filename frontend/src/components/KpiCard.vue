@@ -2,15 +2,15 @@
 // One KPI card. Presentation + its own inline editor; it does NOT fetch. ChartCanvas
 // owns all data orchestration and passes the result down, so every tile's loading /
 // error state is handled uniformly in one place.
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   AlertCircle,
   Bold,
+  Copy,
   GripVertical,
   Loader2,
   Minus,
   Palette,
-  Pencil,
   SlidersHorizontal,
   TrendingDown,
   TrendingUp,
@@ -27,6 +27,7 @@ import type {
 import { AGG_LABEL, allowedAggregations, coerceAggregation } from '../utils/aggregations'
 import { temporalColumns } from '../utils/columnKind'
 import { asHexInput, CHART_BG_PALETTE, CHART_PALETTE, normalizeHex } from '../utils/chartPalette'
+import { effectiveColor, formatNumber, type NumberOverrides } from '../composables/useDashboardSettings'
 
 const props = defineProps<{
   config: KpiConfig
@@ -37,14 +38,18 @@ const props = defineProps<{
   // TASK-031: the metric-over-time series for the sparkline (ChartCanvas fetches it,
   // exactly like `value`). Null when this card has no trend dimension or none loaded yet.
   trend?: AggregateResponse | null
+  // True while this card's editor is shown in the side drawer (Power BI–style). When false
+  // the inline controls are hidden so the card stays clean; when true they teleport to the drawer.
+  selected?: boolean
 }>()
 
 const emit = defineEmits<{
   'update:config': [config: KpiConfig]
   remove: [id: number]
+  duplicate: [id: number]
+  // The card body was clicked — ChartCanvas opens this card's settings in the side drawer.
+  'open-settings': []
 }>()
-
-const editing = ref(false)
 
 // The auto-derived label ("Sum of revenue" / "Total rows"); the user can override it
 // (TASK-033 #2) via the editor's Title field. `title` is what everything else consumes.
@@ -65,28 +70,91 @@ const missingColumn = computed(
     !props.columns.some((c) => c.name === props.config.measure),
 )
 
+// TASK-044: per-KPI number formatting overrides (null ⇒ global setting).
+const kpiFmt = computed<NumberOverrides>(() => ({
+  decimals: props.config.decimals,
+  thousands: props.config.thousands,
+  currency: props.config.currency,
+}))
+
+// The value as a finite number, or null — declared before the count-up tween below.
+const numericValue = computed<number | null>(() => {
+  const v = props.value
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+})
+
+// TASK-045: animate the big number with a count-up (easeOutCubic) whenever the value
+// changes — loads, cross-filter refreshes, target edits all get a smooth roll. Respects
+// prefers-reduced-motion; non-numeric values (dates / null) skip the tween.
+const reduceMotion =
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+const animated = ref<number>(
+  typeof props.value === 'number' && Number.isFinite(props.value) ? props.value : 0,
+)
+let countRaf = 0
+watch(
+  numericValue,
+  (to, from) => {
+    const target = typeof to === 'number' && Number.isFinite(to) ? to : 0
+    const start = typeof from === 'number' && Number.isFinite(from) ? from : 0
+    if (reduceMotion || start === target) {
+      cancelAnimationFrame(countRaf)
+      animated.value = target
+      return
+    }
+    const duration = 650
+    const t0 = performance.now()
+    cancelAnimationFrame(countRaf)
+    const step = (now: number): void => {
+      const p = Math.min(1, (now - t0) / duration)
+      const eased = 1 - Math.pow(1 - p, 3)
+      animated.value = start + (target - start) * eased
+      if (p < 1) countRaf = requestAnimationFrame(step)
+      else animated.value = target
+    }
+    countRaf = requestAnimationFrame(step)
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => cancelAnimationFrame(countRaf))
+
 const display = computed(() => {
   const v = props.value
   if (v === null) return '—'
   if (typeof v === 'string') return v // MIN/MAX over a date arrives as an ISO string
   if (!Number.isFinite(v)) return '—'
-  const frac = props.config.aggregation === 'avg' || !Number.isInteger(v) ? 2 : 0
-  return v.toLocaleString(undefined, { maximumFractionDigits: frac })
+  const num = formatNumber(animated.value, kpiFmt.value)
+  const prefix = props.config.prefix ?? ''
+  const suffix = props.config.suffix ?? ''
+  return `${prefix}${num}${suffix}`
 })
 
 // --- #14 delta vs target ----------------------------------------------------------
 function fmtNum(n: number): string {
-  return n.toLocaleString(undefined, { maximumFractionDigits: Number.isInteger(n) ? 0 : 2 })
+  return formatNumber(n, kpiFmt.value)
 }
 
-const hasTarget = computed(() => props.config.target !== null && props.config.target !== undefined)
-
-// The value as a finite number, or null. MIN/MAX over a date is an ISO string, and
-// loading/error/empty is null — none of those can be compared to a numeric target.
-const numericValue = computed<number | null>(() => {
-  const v = props.value
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
+// The card's value text colour: when `colorByTarget` is on, the value takes the delta's
+// good/bad hue (the same design tokens the delta chip uses -- --ink-green-7 / --ink-red-6,
+// not a one-off literal); otherwise a tile accent first, then the global accent, else default ink.
+const valueColorStyle = computed(() => {
+  if (props.config.colorByTarget) {
+    const d = delta.value
+    if (d) return { color: d.good ? 'var(--ink-green-7)' : 'var(--ink-red-6)' }
+  }
+  const c = effectiveColor(props.config.accent)
+  return c ? { color: c } : undefined
 })
+
+// TASK-044: alignment of the label + value block (left by default, or centered).
+const alignCls = computed(() =>
+  props.config.align === 'center' ? 'items-center text-center' : '',
+)
+
+const hasTarget = computed(() => props.config.target !== null && props.config.target !== undefined)
 
 // The delta of the (possibly cross-filtered) value against the card's target. Null unless
 // there IS a target AND the value is a finite number — the chip renders only when non-null.
@@ -172,6 +240,30 @@ const sparkPoints = computed<string | null>(() => {
     .join(' ')
 })
 
+// TASK-044: alternative sparkline shapes. `area` closes the line down to the baseline;
+// `bar` draws a mini bar chart; `line` (default) is the polyline above.
+const sparkPolygon = computed<string | null>(() => {
+  const p = sparkPoints.value
+  if (!p) return null
+  return `0,${SPARK_H} ${p} ${SPARK_W},${SPARK_H}`
+})
+const sparkBars = computed<Array<{ x: number; y: number; w: number; h: number }> | null>(() => {
+  const v = trendValues.value
+  const n = v.length
+  if (n < 1) return null
+  const min = Math.min(...v)
+  const max = Math.max(...v)
+  const span = max - min || 1
+  const innerW = SPARK_W
+  const innerH = SPARK_H - 2 * SPARK_PAD
+  const slot = innerW / n
+  const bw = slot * 0.7
+  return v.map((val, i) => {
+    const h = ((val - min) / span) * innerH
+    return { x: i * slot + (slot - bw) / 2, y: SPARK_H - SPARK_PAD - h, w: bw, h }
+  })
+})
+
 // Long-form title: the metric, the time column, and the span it covers.
 const sparkTitle = computed(() => {
   const t = props.trend
@@ -233,14 +325,20 @@ function onTitleChange(raw: string): void {
 // listeners). `null` restores the brand primary. Drives the sparkline stroke via currentColor.
 const colorOpen = ref(false)
 const colorPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+const colorMaxH = ref(360)
 function toggleColor(e: MouseEvent): void {
   if (colorOpen.value) {
     colorOpen.value = false
     return
   }
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  colorPos.value = { x: r.right, y: r.bottom }
-  editing.value = false // one floating panel open at a time
+  const margin = 8
+  const estH = 380
+  const vh = window.innerHeight
+  let top = r.bottom + 4
+  if (top + estH > vh - margin) top = Math.max(margin, r.top - estH - 4)
+  colorPos.value = { x: r.right, y: top }
+  colorMaxH.value = Math.max(160, Math.min(estH, vh - top - margin))
   colorOpen.value = true
 }
 function pickColor(c: string | null): void {
@@ -269,33 +367,50 @@ function toggleBold(): void {
   emit('update:config', { ...props.config, bold: !props.config.bold })
 }
 
-// TASK-037: the metric editor is a FLOATING popover, not an in-card block. On a small tile an
-// in-flow editor was clipped by the card's fixed height + `overflow-hidden`, so you had to
-// enlarge the card before you could edit it. Anchored to the pencil and clamped to the
-// viewport, it now opens at full size regardless of how small (or where) the card is.
-const editorPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
-function toggleEditor(e: MouseEvent): void {
-  if (editing.value) {
-    editing.value = false
-    return
-  }
-  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  const M = 8 // viewport margin; PW/PH ≈ the panel's design box (w-64, up to ~6 fields)
-  const PW = 256
-  const PH = 340
-  let x = r.left
-  if (x + PW > window.innerWidth - M) x = window.innerWidth - M - PW
-  if (x < M) x = M
-  let y = r.bottom + 4
-  if (y + PH > window.innerHeight - M) y = Math.max(M, window.innerHeight - M - PH)
-  editorPos.value = { x, y }
-  colorOpen.value = false // one floating panel open at a time
-  editing.value = true
-}
+// TASK-037: the metric editor lives in the side settings drawer (Power BI–style) when the card
+// is selected, so it always opens at full size regardless of how small (or where) the card is.
+
 
 function toggleClean(): void {
   emit('update:config', { ...props.config, hideControls: !props.config.hideControls })
 }
+
+// TASK-044: generic config patch + number parse + style reset for the drawer controls.
+function patch(p: Partial<KpiConfig>): void {
+  emit('update:config', { ...props.config, ...p })
+}
+function numOrNull(raw: string): number | null {
+  const s = raw.trim()
+  if (s === '') return null
+  const n = Number(s)
+  return Number.isFinite(n) ? n : null
+}
+const STYLE_DEFAULTS: Partial<KpiConfig> = {
+  decimals: undefined,
+  thousands: undefined,
+  currency: undefined,
+  prefix: undefined,
+  suffix: undefined,
+  colorByTarget: undefined,
+  showSpark: undefined,
+  sparkType: undefined,
+  align: undefined,
+  border: undefined,
+  radius: undefined,
+  shadow: undefined,
+}
+function resetStyle(): void {
+  emit('update:config', { ...props.config, ...STYLE_DEFAULTS })
+}
+
+// TASK-044: per-card chrome driven by config (border / corner radius / drop shadow).
+const cardClass = computed(() => {
+  const r = props.config.radius ?? 'md'
+  const radius = r === 'sm' ? 'rounded-3' : r === 'lg' ? 'rounded-6' : 'rounded-5'
+  const border = props.config.border === false ? 'border-0' : 'border border-outline-gray-1 shadow-sm'
+  const shadow = props.config.shadow === false ? '' : 'hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]'
+  return `group tile-drag-handle relative flex h-full flex-col overflow-hidden bg-surface-base p-4 ${radius} ${border} ${shadow}`
+})
 
 const selectCls =
   'w-full rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-1 text-xs text-ink-gray-8 focus:border-primary-5 focus:outline-none'
@@ -303,7 +418,8 @@ const selectCls =
 
 <template>
   <div
-    class="tile-drag-handle group relative flex h-full flex-col overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base p-4 shadow-sm"
+    :class="[cardClass, selected ? 'ring-2 ring-primary' : '']"
+    @click="emit('open-settings')"
     :style="config.bg ? { backgroundColor: config.bg } : undefined"
   >
     <!-- Label + hover actions -->
@@ -326,61 +442,59 @@ const selectCls =
           {{ title }}
         </span>
       </div>
-      <div class="js-export-exclude flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        <!-- Edit metric (a control) — hidden by the clean toggle; present/export hide the
-             whole group via js-export-exclude, leaving just label + value + spark. -->
-        <button
-          v-if="!config.hideControls"
-          type="button"
-          class="rounded-2 p-1 hover:bg-surface-gray-2"
-          :class="editing ? 'text-primary' : 'text-ink-gray-4 hover:text-ink-gray-7'"
-          :title="editing ? 'Close editor' : 'Edit metric'"
-          @click="toggleEditor"
-        >
-          <Pencil class="h-3 w-3" />
-        </button>
-        <!-- Presentation toolbar (always available so a cleaned card can be recoloured /
-             restored / removed). -->
+      <Teleport to="#tile-settings-drawer-body">
+      <div v-if="selected" class="js-export-exclude flex flex-col gap-2">
+        <!-- Presentation toolbar (colour / bold / clean / remove) — lives in the settings
+             drawer while this card is selected; hidden on the card itself. -->
         <button
           type="button"
-          class="rounded-2 p-1 hover:bg-surface-gray-2"
-          :class="config.accent || config.bg ? 'text-primary' : 'text-ink-gray-4 hover:text-primary'"
+          class="flex items-center gap-2 rounded-2 px-2 py-1.5 text-left text-xs hover:bg-surface-gray-2"
+          :class="config.accent || config.bg ? 'text-primary' : 'text-ink-gray-7'"
           title="Colour & card background"
           @click="toggleColor"
         >
-          <Palette class="h-3 w-3" />
+          <Palette class="h-3.5 w-3.5" /> Colour &amp; background
         </button>
         <button
           type="button"
-          class="rounded-2 p-1 hover:bg-surface-gray-2"
-          :class="config.bold ? 'text-primary' : 'text-ink-gray-4 hover:text-primary'"
+          class="flex items-center gap-2 rounded-2 px-2 py-1.5 text-left text-xs hover:bg-surface-gray-2"
+          :class="config.bold ? 'text-primary' : 'text-ink-gray-7'"
           :title="config.bold ? 'Unbold title & value' : 'Bold title & value'"
           @click="toggleBold"
         >
-          <Bold class="h-3 w-3" />
+          <Bold class="h-3.5 w-3.5" /> Bold
         </button>
         <button
           type="button"
-          class="rounded-2 p-1 hover:bg-surface-gray-2"
-          :class="config.hideControls ? 'text-primary' : 'text-ink-gray-4 hover:text-primary'"
+          class="flex items-center gap-2 rounded-2 px-2 py-1.5 text-left text-xs hover:bg-surface-gray-2"
+          :class="config.hideControls ? 'text-primary' : 'text-ink-gray-7'"
           :title="config.hideControls ? 'Show controls' : 'Hide controls (keep title + value)'"
           @click="toggleClean"
         >
-          <SlidersHorizontal class="h-3 w-3" />
+          <SlidersHorizontal class="h-3.5 w-3.5" /> Clean
         </button>
         <button
           type="button"
-          class="rounded-2 p-1 text-ink-gray-4 hover:bg-surface-gray-2 hover:text-ink-red"
+          class="flex items-center gap-2 rounded-2 px-2 py-1.5 text-left text-xs text-ink-gray-7 hover:bg-surface-gray-2 hover:text-ink-red"
           title="Remove card"
           @click="emit('remove', config.id)"
         >
-          <X class="h-3 w-3" />
+          <X class="h-3.5 w-3.5" /> Remove
+        </button>
+        <button
+          type="button"
+          class="flex items-center gap-2 rounded-2 px-2 py-1.5 text-left text-xs text-ink-gray-7 hover:bg-surface-gray-2"
+          title="Duplicate card"
+          @click="emit('duplicate', config.id)"
+        >
+          <Copy class="h-3.5 w-3.5" /> Duplicate
         </button>
       </div>
+      </Teleport>
     </div>
 
     <!-- Value + #14 delta-vs-target chip -->
-    <div class="mt-2 flex min-h-[2.25rem] items-center">
+    <div class="mt-2 flex min-h-[2.25rem] items-center" :class="alignCls">
       <Loader2 v-if="loading" class="h-5 w-5 animate-spin text-ink-gray-4" />
       <template v-else-if="error">
         <p class="flex items-start gap-1 text-xs text-ink-red">
@@ -388,10 +502,11 @@ const selectCls =
           <span>{{ missingColumn ? 'Column no longer exists — pick another.' : error }}</span>
         </p>
       </template>
-      <span v-else class="flex min-w-0 items-baseline gap-2">
+      <span v-else class="flex min-w-0 items-baseline gap-2" :class="alignCls">
         <span
           class="truncate text-2xl text-ink-gray-9"
           :class="config.bold ? 'font-bold' : 'font-semibold'"
+          :style="[valueColorStyle, config.fontFamily ? { fontFamily: config.fontFamily } : {}, config.valueFontSize ? { fontSize: `${config.valueFontSize}px`, lineHeight: 1 } : {}]"
           :title="display"
         >
           {{ display }}
@@ -416,18 +531,53 @@ const selectCls =
       Target: {{ targetDisplay }}
     </p>
 
-    <!-- #14 sparkline: the metric's trend over the chosen temporal column. Drawn only
-         when the series has >=2 numeric points and the card isn't in an error state. -->
-    <div v-if="!error && sparkPoints" class="mt-2" :title="sparkTitle">
+    <!-- #14 sparkline: the metric's trend over the chosen temporal column. Drawn only when
+         enabled (`showSpark`) and the series has points; the shape follows `sparkType`. -->
+    <div
+      v-if="(config.showSpark !== false) && !error && (sparkPoints || sparkBars)"
+      class="mt-2"
+      :title="sparkTitle"
+    >
       <svg
+        v-if="config.sparkType === 'bar'"
         class="h-6 w-full text-primary"
         :style="config.accent ? { color: config.accent } : undefined"
         :viewBox="`0 0 ${SPARK_W} ${SPARK_H}`"
         preserveAspectRatio="none"
         aria-hidden="true"
       >
+        <rect
+          v-for="(b, i) in sparkBars"
+          :key="i"
+          :x="b.x"
+          :y="b.y"
+          :width="b.w"
+          :height="b.h"
+          fill="currentColor"
+          fill-opacity="0.6"
+        />
+      </svg>
+      <svg
+        v-else
+        class="h-6 w-full text-primary"
+        :style="config.accent ? { color: config.accent } : undefined"
+        :viewBox="`0 0 ${SPARK_W} ${SPARK_H}`"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <polygon
+          v-if="(config.sparkType ?? 'area') === 'area' && sparkPolygon"
+          :points="sparkPolygon ?? undefined"
+          fill="currentColor"
+          fill-opacity="0.15"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linejoin="round"
+          vector-effect="non-scaling-stroke"
+        />
         <polyline
-          :points="sparkPoints"
+          v-else
+          :points="sparkPoints ?? undefined"
           fill="none"
           stroke="currentColor"
           stroke-width="1.5"
@@ -438,28 +588,15 @@ const selectCls =
       </svg>
     </div>
 
-    <!-- TASK-037: metric editor as a FLOATING popover (fixed panel + click-outside backdrop),
-         so it opens at full size even when the card is tiny — an in-flow editor was clipped by
-         the card's fixed height + `overflow-hidden`, forcing you to enlarge the card first.
-         Teleported to <body> so `position: fixed` resolves against the viewport: the grid item's
-         CSS transform would otherwise make a fixed child resolve against (and clip to) the item. -->
-    <Teleport to="body">
-    <template v-if="editing && !config.hideControls">
-      <div class="js-export-exclude no-drag fixed inset-0 z-40" @click="editing = false"></div>
+    <!-- TASK-037: metric editor lives in the side settings drawer (Power BI–style) when the card
+         is selected, so it always opens at full size. Teleported into the drawer body. -->
+    <Teleport to="#tile-settings-drawer-body">
+    <template v-if="selected">
       <div
-        class="js-export-exclude no-drag fixed z-50 max-h-[70vh] w-64 space-y-2 overflow-auto rounded-3 border border-outline-gray-2 bg-surface-base p-3 shadow-lg"
-        :style="{ top: `${editorPos.y}px`, left: `${editorPos.x}px` }"
+        class="js-export-exclude space-y-3 rounded-3 border border-outline-gray-2 bg-surface-base p-3"
       >
         <div class="flex items-center justify-between">
           <p class="px-0.5 text-[11px] font-semibold uppercase tracking-wide text-ink-gray-5">Edit KPI</p>
-          <button
-            type="button"
-            class="rounded-2 p-0.5 text-ink-gray-4 hover:bg-surface-gray-2 hover:text-ink-gray-7"
-            title="Close"
-            @click="editing = false"
-          >
-            <X class="h-3 w-3" />
-          </button>
         </div>
         <div>
           <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Title (optional)</label>
@@ -525,6 +662,105 @@ const selectCls =
             <option v-for="c in trendOptions" :key="c.name" :value="c.name">{{ c.name }}</option>
           </select>
         </div>
+
+        <!-- TASK-044: per-KPI formatting + presentation controls. All optional; empty ⇒ default. -->
+        <div class="mt-1 border-t border-outline-gray-1 pt-2">
+          <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-gray-5">Style</p>
+          <div class="grid grid-cols-2 gap-1.5 mb-1.5">
+            <div>
+              <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Font Family</label>
+              <select :class="selectCls" :value="config.fontFamily ?? ''" @change="patch({ fontFamily: (($event.target as HTMLSelectElement).value) || null })">
+                <option value="">Default (Inter)</option>
+                <option value="Arial, sans-serif">Arial</option>
+                <option value="'Times New Roman', serif">Times</option>
+                <option value="'Courier New', monospace">Courier</option>
+                <option value="'Comic Sans MS', cursive">Comic Sans</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Value Size</label>
+              <select :class="selectCls" :value="config.valueFontSize ?? ''" @change="patch({ valueFontSize: numOrNull(($event.target as HTMLSelectElement).value) })">
+                <option value="">Default (24px)</option>
+                <option value="16">16px</option>
+                <option value="20">20px</option>
+                <option value="24">24px</option>
+                <option value="32">32px</option>
+                <option value="40">40px</option>
+                <option value="48">48px</option>
+                <option value="56">56px</option>
+                <option value="64">64px</option>
+              </select>
+            </div>
+          </div>
+          <div class="mb-1">
+            <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Decimals</label>
+            <input type="number" min="0" max="8" :class="selectCls" :value="config.decimals ?? ''" placeholder="global" @change="patch({ decimals: numOrNull(($event.target as HTMLInputElement).value) })" />
+          </div>
+          <div class="mb-1 flex items-center gap-3 text-[12px] text-ink-gray-7">
+            <label class="flex items-center gap-1"><input type="checkbox" class="h-4 w-4 accent-primary" :checked="config.thousands ?? true" @change="patch({ thousands: ($event.target as HTMLInputElement).checked })" /> Thousands</label>
+            <label class="flex items-center gap-1"><input type="checkbox" class="h-4 w-4 accent-primary" :checked="config.currency === true" @change="patch({ currency: ($event.target as HTMLInputElement).checked })" /> Currency</label>
+          </div>
+          <div class="mb-1 flex gap-2">
+            <div class="flex-1">
+              <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Prefix</label>
+              <input type="text" :class="selectCls" :value="config.prefix ?? ''" placeholder="e.g. $" @change="patch({ prefix: (($event.target as HTMLInputElement).value).trim() || null })" />
+            </div>
+            <div class="flex-1">
+              <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Suffix</label>
+              <input type="text" :class="selectCls" :value="config.suffix ?? ''" placeholder="e.g. %" @change="patch({ suffix: (($event.target as HTMLInputElement).value).trim() || null })" />
+            </div>
+          </div>
+          <label class="mb-1 flex items-center justify-between gap-2 text-[12px] text-ink-gray-7">
+            <span>Colour by target</span>
+            <input type="checkbox" class="h-4 w-4 accent-primary" :checked="config.colorByTarget === true" @change="patch({ colorByTarget: ($event.target as HTMLInputElement).checked })" />
+          </label>
+          <label class="mb-1 flex items-center justify-between gap-2 text-[12px] text-ink-gray-7">
+            <span>Show sparkline</span>
+            <input type="checkbox" class="h-4 w-4 accent-primary" :checked="config.showSpark !== false" @change="patch({ showSpark: ($event.target as HTMLInputElement).checked })" />
+          </label>
+          <div class="mb-1">
+            <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Sparkline type</label>
+            <select :class="selectCls" :value="config.sparkType ?? 'area'" @change="patch({ sparkType: (($event.target as HTMLSelectElement).value) as KpiConfig['sparkType'] })">
+              <option value="line">Line</option>
+              <option value="area">Area</option>
+              <option value="bar">Bar</option>
+            </select>
+          </div>
+          <div class="mb-1">
+            <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Alignment</label>
+            <select :class="selectCls" :value="config.align ?? 'left'" @change="patch({ align: (($event.target as HTMLSelectElement).value) as KpiConfig['align'] })">
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+            </select>
+          </div>
+          <div class="flex gap-2">
+            <div class="flex-1">
+              <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Border</label>
+              <select :class="selectCls" :value="config.border === false ? 'off' : 'on'" @change="patch({ border: (($event.target as HTMLSelectElement).value) === 'on' })">
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select>
+            </div>
+            <div class="flex-1">
+              <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Radius</label>
+              <select :class="selectCls" :value="config.radius ?? 'md'" @change="patch({ radius: (($event.target as HTMLSelectElement).value) as KpiConfig['radius'] })">
+                <option value="sm">Small</option>
+                <option value="md">Medium</option>
+                <option value="lg">Large</option>
+              </select>
+            </div>
+            <div class="flex-1">
+              <label class="mb-1 block text-[11px] font-medium text-ink-gray-6">Shadow</label>
+              <select :class="selectCls" :value="config.shadow ? 'on' : 'off'" @change="patch({ shadow: (($event.target as HTMLSelectElement).value) === 'on' })">
+                <option value="off">Off</option>
+                <option value="on">On</option>
+              </select>
+            </div>
+          </div>
+          <button type="button" class="mt-1 w-full rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-1 text-[11px] text-ink-gray-6 hover:bg-surface-gray-2 hover:text-primary" @click="resetStyle">
+            Reset style to default
+          </button>
+        </div>
       </div>
     </template>
     </Teleport>
@@ -537,8 +773,8 @@ const selectCls =
     <template v-if="colorOpen">
       <div class="js-export-exclude no-drag fixed inset-0 z-40" @click="colorOpen = false"></div>
       <div
-        class="js-export-exclude no-drag fixed z-50 max-h-[70vh] w-56 overflow-auto rounded-3 border border-outline-gray-2 bg-surface-base p-2.5 shadow-lg"
-        :style="{ top: `${colorPos.y + 4}px`, left: `${colorPos.x}px`, transform: 'translateX(-100%)' }"
+        class="js-export-exclude no-drag fixed z-50 w-56 overflow-auto rounded-3 border border-outline-gray-2 bg-surface-base p-2.5 shadow-lg"
+        :style="{ top: `${colorPos.y}px`, left: `${colorPos.x}px`, maxHeight: `${colorMaxH}px`, transform: 'translateX(-100%)' }"
       >
         <!-- Sparkline accent -->
         <p class="mb-1.5 px-0.5 text-[11px] font-medium text-ink-gray-6">Sparkline colour</p>

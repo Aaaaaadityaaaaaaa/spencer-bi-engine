@@ -269,4 +269,4 @@ run), uploads gated on size across three layers and on extension before any byte
 filesystem uuid provably kept out of all SQL and the frozen `duckdb_manager.py` + `sql_validator.py`
 untouched. The honest edges are a documented dev-only coverage boundary (finding 1), the by-design reliance
 on nginx for the true upload ceiling (finding 2), and one off-HTTP proof (finding 3). I have **not** marked
-this task closed — **awaiting your sign-off.**
+this task closed — **SIGNED OFF by user on 2026-08-29.**

@@ -385,6 +385,49 @@ async def get_schema(session_uuid: str):
 
     return SchemaResponse(tables=tables)
 
+@router.delete("/{session_uuid}/tables/{table_name}", dependencies=[Depends(require_session_owner)])
+async def delete_table(session_uuid: str, table_name: str):
+    """Drop a table from the session and remove it from the schema cache."""
+    # Ensure the table name is valid/safe before using in a raw DROP
+    import re
+    if not re.match(r"^[a-zA-Z0-9_]+$", table_name):
+        raise HTTPException(status_code=400, detail="Invalid table name")
+
+    schema_key = f"schema:{session_uuid}"
+    schema_data = redis_manager.get_json(schema_key)
+    if not schema_data or table_name not in schema_data:
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found in session")
+
+    # Prevent dropping the primary table if it's the only one (optional safety, or just let them)
+    # Actually, if they drop the primary table, they can just upload a new one.
+
+    # Drop from DuckDB
+    try:
+        await db_manager.run_readwrite(f"DROP TABLE IF EXISTS {table_name}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Remove from Redis schema cache
+    del schema_data[table_name]
+    redis_manager.set_json(schema_key, schema_data)
+
+    return {"status": "ok"}
+
+@router.post("/{session_uuid}/tables/{table_name}/primary", dependencies=[Depends(require_session_owner)])
+async def make_table_primary(session_uuid: str, table_name: str):
+    """Set a specific table as the primary table for the session."""
+    schema_key = f"schema:{session_uuid}"
+    schema_data = redis_manager.get_json(schema_key)
+    if not schema_data or table_name not in schema_data:
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found in session")
+
+    # Update primary flag
+    for tname, ctx in schema_data.items():
+        ctx["is_primary"] = (tname == table_name)
+    
+    redis_manager.set_json(schema_key, schema_data)
+    return {"status": "ok"}
+
 @router.delete("/{session_uuid}")
 async def delete_session(
     session_uuid: str,

@@ -12,20 +12,24 @@
 // session switches mid-flight, the late response is dropped instead of rendered.
 import { ref, watch, computed, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
-import { Sparkles, Play, Loader2, AlertCircle, Bookmark, Clock, Check, X, Info, Zap, Wrench, Table2, LayoutDashboard } from '@lucide/vue'
+import { Sparkles, Play, Loader2, AlertCircle, Bookmark, Clock, Check, X, Info, Zap, Wrench, Table2, LayoutDashboard, Download, Copy } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
+import { useToasts } from '../composables/useToast'
 import { useQueryHistory } from '../composables/useQueryHistory'
 import { useQuestionHandoff } from '../composables/useQuestionHandoff'
 import { useCanvasSeed } from '../composables/useCanvasSeed'
-import { askQuestion, sqlAssist, executeSql, apiErrorMessage } from '../services/api'
-import { friendlyTableName } from '../utils/tableName'
+import { askQuestion, sqlAssist, executeSql, exportRows, apiErrorMessage } from '../services/api'
+import { friendlyTableName, displaySql } from '../utils/tableName'
+import { copyToClipboard } from '../utils/csvExport'
 import type { AskTurn, SqlAssistMode, ExecuteResultResponse } from '../types'
 import SqlEditor from './SqlEditor.vue'
 import ResultsTable from './ResultsTable.vue'
 import QueryHistory from './QueryHistory.vue'
+import EmptyState from './EmptyState.vue'
 
 const { sessionUuid, tableName, columns, materializeResult, error: sessionError } = useSession()
 const { recordRun, saveQuery } = useQueryHistory()
+const { pushToast } = useToasts()
 const { pendingQuestion, takePendingQuestion } = useQuestionHandoff()
 const { seedChartOnCanvas } = useCanvasSeed()
 const router = useRouter()
@@ -44,7 +48,9 @@ watch(
   [sessionUuid, tableName],
   ([uuid, table]) => {
     if (!uuid || !table) return
-    const starter = `SELECT *\nFROM ${table}\nLIMIT 100;`
+    // Show the ORIGINAL table name in the starter SQL, not the long t_<uuid>_ physical name.
+    // The backend alias resolver rewrites it back to the physical name at query time (TASK-043).
+    const starter = `SELECT *\nFROM ${friendlyTableName(table)}\nLIMIT 100;`
     if (sqlText.value === '' || sqlText.value === seeded.value) {
       sqlText.value = starter
       seeded.value = starter
@@ -66,6 +72,27 @@ const runError = ref<string | null>(null)
 // Non-null after a successful /ask: shows whether the SQL came from cache and how many
 // self-correction passes the model needed.
 const askMeta = ref<{ cacheHit: boolean; retries: number } | null>(null)
+// #Batch5: derive an HONEST trust signal from the real signals the backend sends. We do
+// NOT fabricate a model confidence percentage (the API has none). Instead: a cache hit is
+// a previously-validated query (high trust); each self-correction pass lowers trust because
+// the first attempt was wrong. This is a heuristic label, not a probability.
+const confidenceLabel = computed<string>(() => {
+  const m = askMeta.value
+  if (!m) return ''
+  if (m.cacheHit) return 'AI: validated before'
+  if (m.retries === 0) return 'AI: first-try'
+  if (m.retries === 1) return 'AI: self-fixed 1×'
+  return `AI: self-fixed ${m.retries}×`
+})
+const confidenceTip = computed<string>(() => {
+  const m = askMeta.value
+  if (!m) return ''
+  if (m.cacheHit)
+    return 'This SQL is a reused, already-validated query from the cache — high confidence. Always review before running anyway.'
+  if (m.retries === 0)
+    return 'The model produced valid SQL on the first try. Still review it — the editor is your checkpoint before Run.'
+  return `The model needed ${m.retries} self-correction pass(es) to produce valid SQL. Read it carefully before running; use Optimize/Fix if unsure.`
+})
 const result = ref<ExecuteResultResponse | null>(null)
 // #23: the SQL that produced the currently-shown `result`. Captured at run time (not read
 // live from the editor) so "Save as table" / "Send to Canvas" persist exactly the result on
@@ -119,7 +146,7 @@ async function generate(): Promise<void> {
   try {
     const res = await askQuestion(uuid, q, history)
     if (uuid !== sessionUuid.value) return // session switched mid-flight -> drop
-    sqlText.value = res.sql
+    sqlText.value = displaySql(res.sql, uuid)
     askMeta.value = { cacheHit: res.cache_hit, retries: res.retries_used }
     turns.value = [...turns.value, { question: q, sql: res.sql }]
   } catch (e) {
@@ -174,7 +201,7 @@ async function assist(mode: SqlAssistMode): Promise<void> {
     if (uuid !== sessionUuid.value) return // session switched mid-flight -> drop
     assistPanel.value = { mode, text: res.explanation, retries: res.retries_used }
     if (res.sql) {
-      sqlText.value = res.sql // Review Gate: never auto-run
+      sqlText.value = displaySql(res.sql, uuid) // Review Gate: never auto-run
       if (mode === 'fix') runError.value = null // the prior error no longer applies
     }
   } catch (e) {
@@ -244,6 +271,17 @@ function cancelSave(): void {
   savingName.value = null
 }
 
+// #Batch10: copy the editor's SQL to the clipboard in one click (share / reuse outside
+// Spencer). Uses the shared, never-throwing clipboard helper; a toast confirms either way
+// so the user is never left guessing whether the copy landed.
+async function copySql(): Promise<void> {
+  const sql = sqlText.value.trim()
+  if (!sql) return
+  const ok = await copyToClipboard(sql)
+  if (ok) pushToast('SQL copied to clipboard', 'success')
+  else pushToast('Could not copy SQL — select and copy manually', 'error')
+}
+
 // #23: persist the shown result as a NEW working table (materializeResult), then route to
 // where it's useful. startMaterialize opens the inline name input remembering the chosen
 // destination; confirm calls the backend (which re-validates + tenant-scopes the SQL and
@@ -277,8 +315,41 @@ async function confirmMaterialize(): Promise<void> {
   }
   materializeDest.value = null
   // The new table is now the active table. 'canvas' also arms a fresh chart tile to land on.
-  if (dest === 'canvas') seedChartOnCanvas()
+  if (dest === 'canvas') {
+    seedChartOnCanvas()
+    pushToast('Sent to Canvas as a new chart', 'success')
+  } else {
+    pushToast('Saved "' + (resultName.value.trim() || 'query_result') + '" as a table', 'success')
+  }
   await router.push(dest === 'canvas' ? '/canvas' : '/table')
+}
+
+// #24: export the currently-shown result rows as .xlsx via the existing backend
+// /export/rows endpoint (CSV/JSON/clipboard are done client-side from the same rows).
+// The backend re-validates the live session and caps rows, so this just triggers the
+// download from the returned blob.
+const exporting = ref(false)
+async function exportResults(): Promise<void> {
+  const r = result.value
+  const uuid = sessionUuid.value
+  if (!r || !uuid || exporting.value) return
+  exporting.value = true
+  try {
+    const cols = r.columns.map((c) => c.name)
+    const blob = await exportRows(uuid, cols, r.rows)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'query-results.xlsx'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    runError.value = apiErrorMessage(e)
+  } finally {
+    exporting.value = false
+  }
 }
 </script>
 
@@ -350,7 +421,7 @@ async function confirmMaterialize(): Promise<void> {
             class="rounded-2 border border-outline-gray-2 bg-surface-gray-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-gray-7 transition-colors hover:bg-surface-gray-3 hover:text-ink-gray-8"
             :title="`Click to insert the table name (${tableName})`"
             @mousedown.prevent
-            @click="insertToken(tableName)"
+            @click="insertToken(friendlyTableName(tableName))"
           >
             {{ friendlyTableName(tableName) }}
           </button>
@@ -373,6 +444,35 @@ async function confirmMaterialize(): Promise<void> {
 
       <!-- SQL editor (the Review Gate) + run bar -->
       <div class="space-y-2">
+        <!-- #Batch5: make the human Review Gate explicit. The NL→SQL flow drops model
+             SQL here and NEVER auto-runs; this banner states that contract up front so
+             the editor reads as "inspect/edit before you run", not "autopilot". -->
+        <div
+          class="flex items-center justify-between gap-2 rounded-3 border border-primary-2 bg-primary-1 px-3 py-1.5"
+        >
+          <span class="inline-flex items-center gap-1.5 text-[11px] font-semibold text-primary">
+            <AlertCircle class="h-3.5 w-3.5" />
+            Review SQL before running
+          </span>
+          <!-- #Batch5: AI trust signal. The backend returns no model confidence score,
+               so we surface an HONEST, evidence-based signal from the two real signals
+               it does send: a cache hit (reused a previously-validated query) and the
+               number of self-correction passes the model needed. More retries => less
+               certain the first attempt was right. -->
+          <span
+            v-if="askMeta"
+            class="group relative inline-flex items-center gap-1 text-[11px] text-ink-gray-5"
+            :title="confidenceTip"
+          >
+            <Info class="h-3.5 w-3.5" />
+            {{ confidenceLabel }}
+            <span
+              class="pointer-events-none absolute right-0 top-full z-20 mt-1 hidden w-56 rounded-3 border border-outline-gray-2 bg-surface-base p-2 text-[11px] font-normal leading-relaxed text-ink-gray-7 shadow-lg group-hover:block"
+            >
+              {{ confidenceTip }}
+            </span>
+          </span>
+        </div>
         <SqlEditor
           ref="editor"
           v-model:sql="sqlText"
@@ -381,10 +481,10 @@ async function confirmMaterialize(): Promise<void> {
           :columns="columns"
         />
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-3">
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2"
+              class="btn btn-ghost"
               :class="{ 'bg-surface-gray-2 text-ink-gray-9': showHistory }"
               title="Show recent runs and saved queries"
               @click="showHistory = !showHistory"
@@ -393,18 +493,28 @@ async function confirmMaterialize(): Promise<void> {
             </button>
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+              class="btn btn-ghost"
               :disabled="!sqlText.trim()"
               title="Save this query"
               @click="startSave"
             >
               <Bookmark class="h-3.5 w-3.5" /> Save
             </button>
+            <!-- #Batch10: one-click copy of the editor SQL (share / reuse elsewhere). -->
+            <button
+              type="button"
+              class="btn btn-ghost"
+              :disabled="!sqlText.trim()"
+              title="Copy SQL to clipboard"
+              @click="copySql"
+            >
+              <Copy class="h-3.5 w-3.5" /> Copy SQL
+            </button>
             <!-- #22 AI assists on the editor's SQL. Explain returns prose; Optimize drops a
                  faster equivalent into the editor (still the Review Gate — never auto-run). -->
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+              class="btn btn-ghost"
               :disabled="!sqlText.trim() || assistMode !== null"
               title="Explain what this SQL does"
               @click="assist('explain')"
@@ -414,7 +524,7 @@ async function confirmMaterialize(): Promise<void> {
             </button>
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+              class="btn btn-ghost"
               :disabled="!sqlText.trim() || assistMode !== null"
               title="Suggest a faster or cleaner equivalent"
               @click="assist('optimize')"
@@ -422,11 +532,11 @@ async function confirmMaterialize(): Promise<void> {
               <Loader2 v-if="assistMode === 'optimize'" class="h-3.5 w-3.5 animate-spin text-primary" />
               <Zap v-else class="h-3.5 w-3.5" /> Optimize
             </button>
-            <span class="hidden text-[11px] text-ink-gray-4 lg:inline">⌘/Ctrl + Enter to run</span>
+            <span class="text-[11px] text-ink-gray-4">⌘/Ctrl + Enter to run</span>
           </div>
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-4 py-1.5 text-sm font-medium text-ink-gray-8 shadow-sm transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+            class="btn btn-ghost"
             :disabled="running || !sqlText.trim()"
             @click="run"
           >
@@ -538,7 +648,7 @@ async function confirmMaterialize(): Promise<void> {
           </span>
           <button
             type="button"
-            class="inline-flex items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+            class="btn btn-ghost"
             :disabled="materializing"
             title="Save these rows as a new table you can clean, query and chart"
             @click="startMaterialize('table')"
@@ -547,7 +657,16 @@ async function confirmMaterialize(): Promise<void> {
           </button>
           <button
             type="button"
-            class="inline-flex items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+            class="btn btn-ghost"
+            :disabled="exporting"
+            title="Download these rows as an .xlsx file"
+            @click="exportResults"
+          >
+            <Download class="h-3.5 w-3.5 text-primary" /> Export .xlsx
+          </button>
+          <button
+            type="button"
+            class="btn btn-ghost"
             :disabled="materializing"
             title="Save these rows as a table and start a chart over it on the Canvas"
             @click="startMaterialize('canvas')"
@@ -609,9 +728,28 @@ async function confirmMaterialize(): Promise<void> {
           :session-uuid="sessionUuid"
         />
       </div>
-      <div v-else class="rounded-4 border border-dashed border-outline-gray-2 py-8 text-center text-xs text-ink-gray-4">
-        Run a query to see results.
+      <div v-else-if="running" class="space-y-3" aria-busy="true">
+        <div class="flex items-center gap-2 text-xs text-ink-gray-5">
+          <Loader2 class="h-3.5 w-3.5 animate-spin text-primary" /> Running query…
+        </div>
+        <div v-for="i in 5" :key="i" class="skeleton h-7 w-full" />
       </div>
+      <EmptyState
+        v-else
+        title="Ask your data anything"
+        subtitle="Type a question in plain English above, or pick one of the suggested questions — Spencer writes and shows you the SQL before it runs."
+      >
+        <template #art>
+          <svg
+            width="72" height="56" viewBox="0 0 72 56" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 14a6 6 0 0 1 6-6h20a6 6 0 0 1 6 6v12a6 6 0 0 1-6 6H26l-9 8v-8h-1a6 6 0 0 1-4-11" />
+            <path d="M24 17l4 4 7-8" />
+          </svg>
+        </template>
+      </EmptyState>
     </div>
   </div>
 </template>

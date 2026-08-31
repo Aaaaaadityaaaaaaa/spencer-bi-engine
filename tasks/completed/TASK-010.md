@@ -272,4 +272,4 @@ undo/redo — is proven end-to-end against the live backend with correct row/col
 calculated values, console clean, backend and `duckdb_manager.py` provably untouched. The main honest gaps
 are coverage (finding 4: 5/10 ops clicked, all sharing one verified path) and the by-design thin client-side
 validation of SQL expressions (finding 3). I have **not** marked this task closed nor touched
-`README.md` / `.ai/CURRENT_STATE.md` — **awaiting your sign-off.**
+`README.md` / `.ai/CURRENT_STATE.md` — **SIGNED OFF by user on 2026-08-29.**

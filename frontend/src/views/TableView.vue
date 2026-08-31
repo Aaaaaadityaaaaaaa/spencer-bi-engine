@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // Table section = the data-prep workspace: upload bar (collapses once loaded),
-// the transform ribbon, the virtualized grid (with per-column ⋮ menus), one shared
-// OpDialog, and the read-only column-profile drawer. Ribbon buttons and column menus
-// funnel an OpRequest into `activeOp` (the dialog); the ⋮ "Profile column" entry sets
-// `profileColumn` (the drawer). All state is the useSession singleton.
+// the Data Quality card, a single Clean ▾ menu (Batch 3 / Table — replaces the
+// 15-button ribbon), the virtualized grid (with per-column ⋮ menus), one shared
+// OpDialog, and the read-only column-profile drawer. The menu and column menus
+// funnel an OpRequest into `activeOp` (the dialog); the ⋮ "Profile column" entry
+// sets `profileColumn` (the drawer). All state is the useSession singleton.
 import { ref } from 'vue'
 import { Loader2 } from '@lucide/vue'
 import UploadDropzone from '../components/UploadDropzone.vue'
@@ -45,11 +46,14 @@ function closeProfile(): void {
     </div>
     <template v-else>
       <UploadDropzone />
+      <!-- The dedicated Data Quality card, and the single Clean menu -->
       <DataQualityPanel v-if="sessionUuid" @fix="openOp" @profile="openProfile" />
       <CleaningToolbar v-if="sessionUuid" @open="openOp" />
-      <DataGrid @column-op="openOp" @profile-column="openProfile" />
+      <DataGrid v-if="sessionUuid" @column-op="openOp" @profile-column="openProfile" />
     </template>
-    <OpDialog :request="activeOp" @close="closeOp" />
+    <Transition name="modal">
+      <OpDialog v-if="activeOp" :request="activeOp" @close="closeOp" />
+    </Transition>
     <ColumnProfilePanel :column="profileColumn" @close="closeProfile" />
   </div>
 </template>

@@ -269,4 +269,4 @@ Severity scale: **Critical / High / Medium / Low / Info.** Findings from reviewi
 regression (§E), which is honestly labelled as prior-run evidence with a re-verify path. The one
 deviation (finding 1, the lucide package name) is recorded, not hidden; the remaining findings are
 Info/Low follow-ups. Backend and `duckdb_manager.py` are provably untouched. I have **not** marked this
-task closed, nor touched `README.md` / `.ai/CURRENT_STATE.md` — **awaiting your sign-off.**
+task closed, nor touched `README.md` / `.ai/CURRENT_STATE.md` — **SIGNED OFF by user on 2026-08-29.**

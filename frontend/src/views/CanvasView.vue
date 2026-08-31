@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { BarChart3 } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import ChartCanvas from '../components/ChartCanvas.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 // Charts need a loaded dataset; the session is shared across views via the singleton.
 const { sessionUuid } = useSession()
@@ -9,12 +9,29 @@ const { sessionUuid } = useSession()
 
 <template>
   <ChartCanvas v-if="sessionUuid" />
-  <div
+  <EmptyState
     v-else
-    class="flex min-h-[350px] flex-col items-center justify-center rounded-5 border border-dashed border-outline-gray-3 bg-surface-base p-8 text-center"
+    title="No data loaded yet"
+    subtitle="Drop a dataset in the Table tab and Spencer will suggest a chart layout you can refine."
   >
-    <BarChart3 class="mb-3 h-8 w-8 text-ink-gray-4" />
-    <h3 class="text-sm font-medium text-ink-gray-9">No data loaded</h3>
-    <p class="mt-1 text-xs text-ink-gray-5">Load a dataset in the Table tab to build a chart.</p>
-  </div>
+    <template #art>
+      <svg
+        width="76" height="56" viewBox="0 0 76 56" fill="none"
+        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="10" y="9" width="56" height="40" rx="7" />
+        <path d="M20 42V32M32 42V23M44 42V29M56 42V16" />
+        <circle cx="56" cy="16" r="3" fill="currentColor" stroke="none" />
+      </svg>
+    </template>
+    <template #actions>
+      <RouterLink
+        to="/table"
+        class="inline-flex items-center gap-1.5 rounded-3 bg-primary px-4 py-2 text-sm font-medium text-ink-white shadow-sm transition-colors hover:bg-primary-7"
+      >
+        Go to Table
+      </RouterLink>
+    </template>
+  </EmptyState>
 </template>

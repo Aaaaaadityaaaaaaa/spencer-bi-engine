@@ -121,7 +121,7 @@ async function remove(t: string): Promise<void> {
         <div class="flex justify-end gap-2">
           <button
             type="button"
-            class="rounded-3 border border-outline-gray-2 bg-surface-base px-3 py-1 text-xs text-ink-gray-7 shadow-sm hover:bg-surface-gray-2"
+            class="btn btn-ghost"
             @click="showForm = false"
           >
             Cancel

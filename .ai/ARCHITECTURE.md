@@ -35,9 +35,18 @@ Scheduling
 APScheduler, in-process (fits single-worker constraint)
 Job store must be persistent (Redis-backed), not the default in-memory store — in-memory jobs are lost on any restart, which directly breaks the product's stated automation goal
 Scheduled runs use a pinned snapshot of schema/bizdict/joins taken at schedule-creation time, decoupled from live session TTL
+Auth & Multi-Tenancy (TASK-027)
+Registered users + JWT (access + refresh) at `/auth/{register,login,refresh,me,logout}`; all data endpoints require a bearer token. Tenant isolation is enforced at the data layer: every session table name is namespaced with the owning user id, and the aggregate/transform/export/profile/query routers resolve the session and verify ownership before any query (`test_tenant_isolation.py` proves cross-user access is rejected). A single SUPERUSER is bootstrapped from env for ops. The AI layer, cache, and scheduling are shared infra, not per-tenant.
+
+Canvas, Dashboards & Wave 5 Charting
+The Canvas is a drag/resize tile grid (grid-layout-plus, TASK-034) with named, save/load-able dashboards persisted per user (useDashboards composable, TASK-035). Charts reduce to a single aggregate contract: `POST /sessions/{id}/aggregate` takes an `AggregateRequest` (dimension / optional `series` breakdown / measure / aggregation) and returns KPI, 1-D series, or 2-D matrix shapes. Wave 5 extended that *same* endpoint additively (no new route) with two optional flags:
+- `measure_y` (+ `top_points`) → raw scatter point cloud (`AggregateResponse.points`), both measures numeric; optional `dimension` colours the points.
+- `box` → per-category `[min, Q1, median, Q3, max]` stats (`AggregateResponse.boxes`) over a numeric measure grouped by a category dimension.
+Both are backwards-compatible: non-scatter/non-box requests are unchanged. Rendered chart types now cover bar, line, area, hbar, pie, stacked, heatmap, treemap, funnel, scatter, box, gauge.
+
 Storage Lifecycle & Deployment Hardening (TASK-013 — single-VM, disposable data)
 Session lifetime is defined by a session:{session_uuid} Redis liveness marker with a sliding TTL (SPENCER_SESSION_TTL_HOURS, default 24h) — set on create/upload, slid on any /sessions/{uuid}/... request (including read-only queries). A session is "dead" once this marker expires.
-A periodic cleanup sweep (services/cleanup_service.sweep, every SPENCER_SWEEP_INTERVAL_MIN, plus once at startup and on-demand via POST /admin/sweep) reclaims each dead session's DuckDB tables + uploads/{uuid}/ dir + Redis keys. Idempotent; a SPENCER_SWEEP_GRACE_MIN window protects in-flight uploads. Runs on a bare asyncio task, independent of the (unbuilt) APScheduler job store.
+A periodic cleanup sweep (services/cleanup_service.sweep, every SPENCER_SWEEP_INTERVAL_MIN, plus once at startup and on-demand via POST /admin/sweep) reclaims each dead session's DuckDB tables + uploads/{uuid}/ dir + Redis keys. Idempotent; a SPENCER_SWEEP_GRACE_MIN window protects in-flight uploads. Runs on a bare asyncio task, independent of the APScheduler job store (TASK-028 implemented cron/interval scheduling with a persistent Redis job store).
 Sweep SQL safety (AP-8/ADR-012): the filesystem-derived uuid is never interpolated into SQL. The catalog is snapshotted, table names are prefix-filtered in Python, and only catalog-sourced quote-escaped identifiers are dropped — all via run_readwrite (frozen duckdb_manager untouched).
 Upload guardrails: SPENCER_MAX_UPLOAD_MB enforced in three layers (nginx client_max_body_size in front = the real pre-server gate; a Content-Length middleware early-reject → 413; a streaming byte-count backstop that removes the partial file → 413). SPENCER_UPLOAD_ALLOWED_EXT extension allowlist → 415 before any bytes persist. The deploy-guard middleware is registered before CORS so CORS stays outermost and early 413s still carry Access-Control-Allow-Origin.
 DuckDB runtime hardening: PRAGMA memory_limit (SPENCER_DUCKDB_MEMORY_LIMIT, default 4GB, operator value regex-validated) + optional temp_directory applied at startup via run_readwrite.
@@ -45,7 +54,8 @@ GET /admin/storage exposes disk/uploads/db bytes, table count, live sessions, or
 Known Open Risks (see CURRENT_STATE.md for status)
 Dual-connection (rw + ro) simultaneous access to one DuckDB file: implemented, not yet empirically verified
 Session/data cleanup: IMPLEMENTED (TASK-013) — sliding-TTL marker + periodic sweep reclaims dead sessions' upload dirs + tables + Redis keys. Boundary: the sweep is dir-indexed, so orphan tables with no uploads/ dir (dev/test artifacts only; production tables always have a dir) are not reclaimed — Low-severity follow-up in CURRENT_STATE.md.
-No LLM API cost/rate control
+LLM API cost/rate control: NOT implemented (S-3 per-user quota, S-4 rate limiting are open architectural items).
 File upload size/type validation: IMPLEMENTED (TASK-013) — 3-layer size cap (nginx / Content-Length 413 / streaming backstop 413) + extension allowlist (415). Reminder: nginx client_max_body_size is a required deploy step, not code.
 No row cap on ad-hoc /execute results
 Secrets management (.env/.gitignore) not yet confirmed in place
+Architectural follow-ups (tracked in CURRENT_STATE.md, all require an ARCHITECTURAL_CHANGE_REQUEST before work): S-3 per-user LLM quota; S-4 API rate limiting; D-1 Redis→app_db catalog mirror with bounded staleness; D-2 ownership-aware sweep (all sessions, not just the calling user); I-1 Alembic migrations; I-2 backup/restore; P-1 billing; P-2 password reset; P-3 observability/alerting; P-4 hide Register tab in single-user mode.

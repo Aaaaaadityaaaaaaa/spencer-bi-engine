@@ -233,16 +233,25 @@ class _RateLimitSignal(Exception):
 
 
 def _is_rate_limit(exc: Exception) -> bool:
-    """True if a LiteLLM completion exception is a 429 / rate-limit, across the shapes
-    LiteLLM surfaces it: a typed RateLimitError, a `.status_code == 429`, or a class
-    name containing 'ratelimit'."""
+    """True if a LiteLLM completion exception is a 429 / rate-limit, OR a 50x 
+    Service Unavailable / timeout error. By classifying 503s here, the key pool 
+    will instantly rotate to the next API key (which often routes to a different 
+    node/region) instead of hard-failing."""
+    status = getattr(exc, "status_code", None)
+    if status in (429, 500, 502, 503, 504):
+        return True
+        
     if litellm is not None:
         rle = getattr(litellm, "RateLimitError", None)
         if rle is not None and isinstance(exc, rle):
             return True
-    if getattr(exc, "status_code", None) == 429:
-        return True
-    return "ratelimit" in type(exc).__name__.lower()
+        # LiteLLM explicitly throws ServiceUnavailableError for 503
+        sue = getattr(litellm, "ServiceUnavailableError", None)
+        if sue is not None and isinstance(exc, sue):
+            return True
+            
+    name = type(exc).__name__.lower()
+    return "ratelimit" in name or "serviceunavailable" in name or "timeout" in name
 
 
 def _rate_limit_signal(exc: Exception) -> "_RateLimitSignal":

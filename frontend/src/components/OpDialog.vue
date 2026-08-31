@@ -4,9 +4,9 @@
 // no version bump) to show the row-count delta + compiled SQL, then applies via the
 // shared useSession().applyOp. Closed by emitting `close`.
 import { reactive, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { X, Play, Loader2, AlertCircle } from '@lucide/vue'
+import { X, Play, Loader2, AlertCircle, Sparkles } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
-import { previewTransform, apiErrorMessage, fetchColumnValues } from '../services/api'
+import { previewTransform, apiErrorMessage, fetchColumnValues, askQuestion } from '../services/api'
 import type {
   OpRequest,
   OpKind,
@@ -64,6 +64,61 @@ const STRATEGIES: { value: ImputeStrategy; label: string }[] = [
 ]
 
 // One flat form; only the fields the active op reads are ever sent (see buildOp).
+
+// AI Formula Generator State
+const showAIPrompt = ref(false)
+const aiPrompt = ref('')
+const isGenerating = ref(false)
+const aiError = ref<string | null>(null)
+
+async function generateFormula() {
+  if (!aiPrompt.value.trim() || !sessionUuid.value) return
+  isGenerating.value = true
+  aiError.value = null
+  try {
+    const prompt = `Write a valid DuckDB SQL SELECT query that computes: '${aiPrompt.value}'. 
+CRITICAL RULES:
+1. This is a ROW-LEVEL scalar calculation. DO NOT use aggregate functions like SUM, COUNT, AVG, MAX, MIN. They are STRICTLY BANNED and will cause a syntax crash.
+2. Use ONLY scalar arithmetic (+, -, *, /) and basic scalar functions (e.g., COALESCE, UPPER, ROUND, CAST).
+3. You MUST return a full SELECT statement selecting EXACTLY ONE column.
+4. You MUST alias the column with a short, descriptive name using AS (do NOT put quotes around the alias).
+5. You MUST include a FROM clause with a dummy table name like 't'.
+6. Do NOT include markdown blocks (\`\`\`sql) or any conversational text.
+Example: SELECT (manufacturing_cost + freight_cost) * Qty AS Total_Cost FROM t`
+    
+    const res = await askQuestion(sessionUuid.value, prompt)
+    
+    let sql = res.sql.replace(/;/g, '').trim()
+    // Strip markdown formatting if any
+    sql = sql.replace(/^```sql/i, '').replace(/```$/i, '').trim()
+    
+    // Parse: SELECT <expression> AS <name> FROM <table>
+    const match = sql.match(/^SELECT\s+([\s\S]+?)\s+AS\s+["']?([a-zA-Z0-9_ ]+)["']?\s+FROM\s+/i)
+    
+    if (match) {
+      form.formula = match[1].trim()
+      // Always overwrite the new column name with the AI's suggestion
+      form.newColumnName = match[2].trim().replace(/\s+/g, '_')
+    } else {
+      // Fallback if the regex fails
+      let fallback = sql.replace(/^SELECT\s+/i, '').replace(/\s+FROM\s+.*$/i, '').trim()
+      const fallbackMatch = fallback.match(/^([\s\S]+?)\s+AS\s+["']?([a-zA-Z0-9_ ]+)["']?$/i)
+      if (fallbackMatch) {
+        form.formula = fallbackMatch[1].trim()
+        form.newColumnName = fallbackMatch[2].trim().replace(/\s+/g, '_')
+      } else {
+        form.formula = fallback
+      }
+    }
+    showAIPrompt.value = false
+  } catch (e) {
+    console.error('Failed to generate formula', e)
+    aiError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    isGenerating.value = false
+  }
+}
+
 const form = reactive({
   column: '',
   columns: [] as string[],
@@ -546,7 +601,25 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
             <input v-model="form.newColumnName" type="text" :class="inputCls" placeholder="total_price" />
           </div>
           <div>
-            <label :class="labelCls">Formula (SQL expression)</label>
+            <div class="flex items-center justify-between mb-1">
+              <label :class="labelCls" style="margin-bottom: 0;">Formula (SQL expression)</label>
+              <button type="button" @click="showAIPrompt = !showAIPrompt" class="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:text-primary-6 transition-colors focus:outline-none">
+                <Sparkles class="h-3 w-3" />
+                Ask AI
+              </button>
+            </div>
+            
+            <div v-if="showAIPrompt" class="mb-2 flex items-center gap-1.5 rounded-3 border border-primary-3 bg-primary-1 p-1 shadow-inner transition-all">
+              <input v-model="aiPrompt" type="text" class="min-w-0 flex-1 rounded-2 border-none bg-transparent px-2 py-1 text-xs font-medium text-ink-gray-8 placeholder-ink-gray-4 focus:ring-0 focus:outline-none" placeholder="e.g. Extract the year from birthdate..." @keydown.enter.prevent="generateFormula" />
+              <button type="button" @click="generateFormula" :disabled="isGenerating || !aiPrompt.trim()" class="shrink-0 rounded-2 bg-primary px-3 py-1.5 text-[11px] font-bold text-white shadow-sm transition-colors hover:bg-primary-6 disabled:opacity-50">
+                <Loader2 v-if="isGenerating" class="h-3.5 w-3.5 animate-spin" />
+                <span v-else>Generate</span>
+              </button>
+            </div>
+            <div v-if="aiError" class="mb-2 text-xs font-semibold text-ink-red">
+              {{ aiError }}
+            </div>
+
             <input v-model="form.formula" type="text" :class="inputCls" placeholder="quantity * unit_price" />
             <p class="mt-1 text-[11px] text-ink-gray-4">Reference existing columns by name, e.g. <code>price * 1.1</code>.</p>
           </div>

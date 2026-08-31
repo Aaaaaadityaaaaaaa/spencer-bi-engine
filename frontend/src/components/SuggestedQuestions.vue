@@ -87,7 +87,7 @@ function ask(q: string): void {
       </button>
       <button
         type="button"
-        class="inline-flex shrink-0 items-center gap-1 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+        class="btn btn-ghost shrink-0"
         :disabled="loading"
         title="Regenerate suggestions"
         @click="load"

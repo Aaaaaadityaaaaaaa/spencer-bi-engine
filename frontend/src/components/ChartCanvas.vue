@@ -15,7 +15,7 @@
 // are useDashboards' job, wired into the header here (TASK-035).
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { GridLayout, GridItem } from 'grid-layout-plus'
-import { AlertCircle, BookMarked, FileDown, Filter, ImageDown, LayoutDashboard, Loader2, Maximize, Pencil, Plus, RefreshCw, Save, Sparkles, Trash2, X } from '@lucide/vue'
+import { AlertCircle, BookMarked, FileDown, Filter, ImageDown, LayoutDashboard, Loader2, Maximize, Pencil, Plus, RefreshCw, Save, Settings, Sparkles, Trash2, X } from '@lucide/vue'
 import { toPng } from 'html-to-image'
 import { jsPDF } from 'jspdf'
 import type {
@@ -34,7 +34,9 @@ import { supportsBreakdown } from '../types'
 import { useSession } from '../composables/useSession'
 import { persistActiveDashboard, readActiveDashboard } from '../composables/useActiveDashboard'
 import { useDashboards } from '../composables/useDashboards'
+import { useToasts } from '../composables/useToast'
 import { useCanvasSeed } from '../composables/useCanvasSeed'
+import { useTileDrawer } from '../composables/useTileDrawer'
 import { apiErrorMessage, fetchAggregate, narrateDataset } from '../services/api'
 import { categoricalColumns, numericColumns, temporalColumns } from '../utils/columnKind'
 import {
@@ -57,6 +59,9 @@ import {
 } from '../utils/dashboardLayout'
 import KpiCard from './KpiCard.vue'
 import ChartTile from './ChartTile.vue'
+import DashboardSettingsModal from './DashboardSettingsModal.vue'
+import EmptyState from './EmptyState.vue'
+import { dashboardSettings } from '../composables/useDashboardSettings'
 
 const { sessionUuid, tableName, columns, rowCount, dataVersion } = useSession()
 const { takePendingSeed } = useCanvasSeed()
@@ -70,6 +75,30 @@ const TREND_LIMIT = 200 // #14 sparkline points; the server clamps a temporal se
 const PERSIST_DEBOUNCE_MS = 250 // a drag/resize mutates the layout many times; coalesce writes.
 const BLANK: TileState<AggregateValue> = { loading: false, error: null, data: null }
 const BLANK_CHART: TileState<AggregateResponse> = { loading: false, error: null, data: null }
+
+// Power BI–style global settings window (#request: report-level formatting instead of per-tile).
+const showSettings = ref(false)
+function applyAllToTiles(): void {
+  for (const p of pages.value) {
+    for (const c of p.charts) {
+      c.config.showValues = dashboardSettings.showValues
+      if (dashboardSettings.accent) c.config.color = dashboardSettings.accent
+    }
+  }
+  persistNow()
+  showSettings.value = false
+}
+
+// Per-visual settings drawer (Power BI–style): clicking a tile opens its editor in a side
+// panel instead of inline controls. State lives in the shared composable so the drawer chrome
+// can sit at the app root (see App.vue) while tiles teleport their editor into it.
+const { selectedTile, openTileDrawer, closeTileDrawer, isTileSelected } = useTileDrawer()
+function isSelected(kind: 'kpi' | 'chart', id: number): boolean {
+  return isTileSelected(kind, id)
+}
+function openTileSettings(kind: 'kpi' | 'chart', id: number): void {
+  openTileDrawer(kind, id, columns.value)
+}
 
 // A chart tile = an id + its config (PersistedChartEntry). ChartConfig stays id-free (it is
 // the pure query + render spec); the id lives on the wrapper so tiles can be added/removed
@@ -280,6 +309,28 @@ function buildSeed(cols: ColumnMeta[]): { kpis: KpiConfig[]; charts: ChartEntry[
       },
     },
   ]
+
+  // #Batch4: seed a SECOND chart when the data supports a different angle. A categorical
+  // breakdown alongside the first chart gives the board a richer, ready-made story instead
+  // of one lonely visual. We only add it when (a) there's a non-temporal categorical column
+  // the first chart isn't already using, and (b) its cardinality stays readable (<= 50 bars).
+  const extraCats = cats.filter(
+    (c) => !isTemporal && c.name !== (dim?.name ?? null) && (c.cardinality === undefined || c.cardinality <= 50),
+  )
+  if (extraCats.length > 0) {
+    const by = extraCats[0]
+    chartsSeed.push({
+      id: nextChartId++,
+      config: {
+        dimension: by.name,
+        series: null,
+        measure: nums[0]?.name ?? null,
+        aggregation: nums.length > 0 ? 'sum' : 'count',
+        chartType: 'bar',
+      },
+    })
+  }
+
   return { kpis: seeded, charts: chartsSeed }
 }
 
@@ -409,6 +460,11 @@ async function loadChart(entry: ChartEntry): Promise<void> {
         series: effectiveSeries(cfg),
         measure: cfg.measure,
         aggregation: cfg.aggregation,
+        // Wave 5 scatter: a Y measure turns the request into a raw point cloud. Only sent
+        // when present; ignored by the backend for non-scatter types anyway.
+        ...(cfg.measureY ? { measure_y: cfg.measureY, top_points: 1000 } : {}),
+        // Wave 5 box plot: group `measure` by `dimension` for per-category stats.
+        ...(cfg.chartType === 'box' ? { box: true } : {}),
         // TASK-036 #4: per-chart Top-N. null/absent ⇒ the default SERIES_LIMIT (unchanged
         // behaviour). The server sorts a categorical series by measure DESC then clamps, so
         // a smaller limit yields the TRUE top-N; clamp here too to never send an absurd value.
@@ -537,12 +593,26 @@ function onKpiUpdate(cfg: KpiConfig): void {
 function onKpiRemove(id: number): void {
   const page = activePage.value
   if (!page) return
+  if (selectedTile.value?.kind === 'kpi' && selectedTile.value.id === id) closeTileDrawer()
   page.kpis = page.kpis.filter((k) => k.id !== id)
   page.layout = page.layout.filter((it) => it.i !== kpiTileId(id))
   delete kpiState[id]
   delete kpiSeq[id]
   delete kpiTrend[id]
   delete kpiTrendSeq[id]
+}
+
+// TASK-044: clone a KPI in place (same config, fresh id) so users can build from a copy.
+function onKpiDuplicate(id: number): void {
+  const page = activePage.value
+  if (!page) return
+  const src = page.kpis.find((k) => k.id === id)
+  if (!src) return
+  const cfg: KpiConfig = { ...src, id: nextKpiId++ }
+  page.kpis.push(cfg)
+  page.layout.push({ i: kpiTileId(cfg.id), x: 0, y: layoutBottom(page.layout), w: KPI_W, h: KPI_H })
+  void loadKpi(cfg)
+  void loadKpiTrend(cfg)
 }
 
 function addKpi(): void {
@@ -586,6 +656,7 @@ function onChartUpdate(id: number, cfg: ChartConfig): void {
 function onChartRemove(id: number): void {
   const page = activePage.value
   if (!page) return
+  if (selectedTile.value?.kind === 'chart' && selectedTile.value.id === id) closeTileDrawer()
   page.charts = page.charts.filter((c) => c.id !== id)
   page.layout = page.layout.filter((it) => it.i !== chartTileId(id))
   delete chartStates[id]
@@ -597,13 +668,32 @@ function onChartRemove(id: number): void {
   }
 }
 
+// TASK-044: clone a chart in place (same config, fresh id) so users can build from a copy.
+function onChartDuplicate(id: number): void {
+  const page = activePage.value
+  if (!page) return
+  const src = page.charts.find((c) => c.id === id)
+  if (!src) return
+  const entry: ChartEntry = { id: nextChartId++, config: { ...src.config } }
+  page.charts.push(entry)
+  page.layout.push({ i: chartTileId(entry.id), x: 0, y: layoutBottom(page.layout), w: CHART_W, h: CHART_H })
+  void loadChart(entry)
+}
+
 function addChart(): void {
   const page = activePage.value
   if (!page || page.charts.length >= MAX_CHARTS) return
   // Start blank (no dimension) -> the tile shows its "choose a dimension" prompt.
   const entry: ChartEntry = {
     id: nextChartId++,
-    config: { dimension: null, series: null, measure: null, aggregation: 'count', chartType: 'bar' },
+    config: {
+      dimension: null,
+      series: null,
+      measure: null,
+      aggregation: 'count',
+      chartType: 'bar',
+      showValues: dashboardSettings.showValues,
+    },
   }
   page.charts.push(entry)
   page.layout.push({ i: chartTileId(entry.id), x: 0, y: layoutBottom(page.layout), w: CHART_W, h: CHART_H })
@@ -719,6 +809,7 @@ function focusOnMount(el: unknown): void {
 
 // --- #15 named Save/Load slots (TASK-035) ----------------------------------------
 const { dashboards, saveDashboard, loadDashboard, renameDashboard, deleteDashboard } = useDashboards()
+const { pushToast } = useToasts()
 const savedOpen = ref(false)
 const savedPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
 const saveName = ref('')
@@ -742,6 +833,7 @@ function saveCurrentDashboard(): void {
   // useDashboards deep-clones, so the saved slot is severed from the live reactive board.
   saveDashboard(name, { pages: pages.value, activePageId: activePageId.value })
   saveName.value = ''
+  pushToast('Dashboard "' + name + '" saved', 'success')
 }
 
 // Replace the LIVE board with a saved slot's pages, then adopt it as the persisted active
@@ -761,6 +853,8 @@ function loadSavedDashboard(id: string): void {
   savedOpen.value = false
   persistNow() // the loaded board becomes the live, auto-persisted board
   loadAll()
+  const loaded = dashboards.value.find((d) => d.id === id)
+  pushToast('Loaded "' + (loaded?.name ?? 'dashboard') + '"', 'success')
 }
 
 function startRenameSaved(id: string, name: string): void {
@@ -770,6 +864,13 @@ function startRenameSaved(id: string, name: string): void {
 function confirmRenameSaved(): void {
   if (renamingSavedId.value) renameDashboard(renamingSavedId.value, savedNameDraft.value)
   renamingSavedId.value = null
+}
+
+// Delete a named slot and confirm with a toast (Batch 9 — consistent action feedback,
+// matching the toast the app shows for transforms, logins and uploads).
+function removeSaved(d: { id: string; name: string }): void {
+  deleteDashboard(d.id)
+  pushToast('Deleted "' + d.name + '"', 'info')
 }
 
 // --- #29 Data storytelling --------------------------------------------------------
@@ -924,7 +1025,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="captureEl"
-    class="space-y-4"
+    class="space-y-3"
     :class="{ 'dashboard-clean overflow-auto bg-surface-base p-4': presenting }"
   >
     <!-- Dashboard header -->
@@ -937,11 +1038,11 @@ onBeforeUnmount(() => {
           Live over all {{ rowCount.toLocaleString() }} rows — aggregated server-side.
         </p>
       </div>
-      <div class="flex items-center gap-2 js-export-exclude">
+      <div class="flex items-center gap-3 js-export-exclude">
         <!-- #15 named Save/Load slots -->
         <button
           type="button"
-          class="flex items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs text-ink-gray-7 transition-colors hover:bg-surface-gray-2"
+          class="btn btn-ghost"
           title="Save or load a named dashboard"
           @click="toggleSaved"
         >
@@ -951,7 +1052,7 @@ onBeforeUnmount(() => {
         <!-- #29 data storytelling: a plain-English overview of the whole dataset. -->
         <button
           type="button"
-          class="flex items-center gap-1.5 rounded-3 bg-primary px-2.5 py-1.5 text-xs font-medium text-ink-white shadow-sm transition-colors hover:bg-primary-7 disabled:cursor-not-allowed disabled:opacity-50"
+          class="btn btn-primary"
           :disabled="narrating"
           title="Summarize this dataset in plain English"
           @click="tellStory()"
@@ -962,7 +1063,7 @@ onBeforeUnmount(() => {
         </button>
         <button
           type="button"
-          class="flex items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:opacity-50"
+          class="btn btn-ghost"
           :disabled="anyLoading"
           title="Refresh all tiles"
           @click="loadAll()"
@@ -973,7 +1074,7 @@ onBeforeUnmount(() => {
         <!-- #17 present + whole-dashboard export -->
         <button
           type="button"
-          class="flex items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+          class="btn btn-ghost"
           :disabled="!hasTiles"
           title="Present the dashboard fullscreen (Esc to exit)"
           @click="togglePresent()"
@@ -983,7 +1084,7 @@ onBeforeUnmount(() => {
         </button>
         <button
           type="button"
-          class="flex items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+          class="btn btn-ghost"
           :disabled="!hasTiles || !!exporting"
           title="Export the whole dashboard as a PNG image"
           @click="exportImage('png')"
@@ -994,7 +1095,7 @@ onBeforeUnmount(() => {
         </button>
         <button
           type="button"
-          class="flex items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs text-ink-gray-7 transition-colors hover:bg-surface-gray-2 disabled:cursor-not-allowed disabled:opacity-50"
+          class="btn btn-ghost"
           :disabled="!hasTiles || !!exporting"
           title="Export the whole dashboard as a PDF"
           @click="exportImage('pdf')"
@@ -1003,8 +1104,27 @@ onBeforeUnmount(() => {
           <FileDown v-else class="h-3.5 w-3.5" />
           PDF
         </button>
+        <!-- Global, report-level settings (Power BI–style). Opens the settings window. -->
+        <button
+          type="button"
+          class="btn btn-ghost"
+          title="Dashboard settings (number format, theme, defaults)"
+          @click="showSettings = true"
+        >
+          <Settings class="h-3.5 w-3.5" />
+          Settings
+        </button>
       </div>
     </div>
+
+    <!-- Global dashboard settings window (Power BI–style). -->
+    <Transition name="modal">
+      <DashboardSettingsModal
+        v-if="showSettings"
+        @close="showSettings = false"
+        @apply-all="applyAllToTiles"
+      />
+    </Transition>
 
     <!-- #15 Save/Load popover (ResultsTable menuOpen + fixed-backdrop idiom). -->
     <template v-if="savedOpen">
@@ -1024,7 +1144,7 @@ onBeforeUnmount(() => {
           />
           <button
             type="button"
-            class="flex shrink-0 items-center gap-1 rounded-2 bg-primary px-2 py-1 text-xs font-medium text-ink-white transition-colors hover:bg-primary-7 disabled:cursor-not-allowed disabled:opacity-50"
+            class="btn btn-primary shrink-0"
             :disabled="!saveName.trim()"
             @click="saveCurrentDashboard"
           >
@@ -1073,7 +1193,7 @@ onBeforeUnmount(() => {
                 type="button"
                 class="shrink-0 rounded p-0.5 text-ink-gray-4 opacity-0 transition-opacity hover:text-ink-red group-hover/row:opacity-100"
                 title="Delete"
-                @click="deleteDashboard(d.id)"
+                @click="removeSaved(d)"
               >
                 <Trash2 class="h-3 w-3" />
               </button>
@@ -1128,7 +1248,7 @@ onBeforeUnmount(() => {
 
     <!-- Page tabs (TASK-034): named pages; click to switch, double-click or pencil to
          rename, × to delete. js-export-exclude so present/export show only the active page. -->
-    <div class="js-export-exclude flex flex-wrap items-center gap-1 border-b border-outline-gray-1 pb-2">
+    <div class="js-export-exclude flex flex-wrap items-center gap-1 border-b border-outline-gray-1 pb-1.5">
       <template v-for="page in pages" :key="page.id">
         <input
           v-if="renamingPageId === page.id"
@@ -1174,7 +1294,7 @@ onBeforeUnmount(() => {
       </template>
       <button
         type="button"
-        class="inline-flex items-center gap-1 rounded-3 border border-dashed border-outline-gray-3 px-2 py-1 text-xs text-ink-gray-5 transition-colors hover:border-primary-5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+        class="btn btn-dashed"
         :disabled="pages.length >= MAX_PAGES"
         title="Add a page"
         @click="addPage()"
@@ -1222,7 +1342,7 @@ onBeforeUnmount(() => {
       @layout-updated="onLayoutUpdated"
     >
       <GridItem
-        v-for="item in layout"
+        v-for="(item, idx) in layout"
         :key="item.i"
         :i="item.i"
         :x="item.x"
@@ -1236,43 +1356,64 @@ onBeforeUnmount(() => {
       >
         <KpiCard
           v-if="kpiByTile(item.i)"
+          class="tile-enter"
+          :style="{ animationDelay: Math.min(idx, 8) * 50 + 'ms' }"
           :config="kpiByTile(item.i)!"
           :columns="columns"
           :loading="kpiStateOf(kpiByTile(item.i)!.id).loading"
           :error="kpiStateOf(kpiByTile(item.i)!.id).error"
           :value="kpiStateOf(kpiByTile(item.i)!.id).data"
           :trend="kpiTrendOf(kpiByTile(item.i)!.id).data"
+          :selected="isSelected('kpi', kpiByTile(item.i)!.id)"
           @update:config="onKpiUpdate"
           @remove="onKpiRemove"
+          @duplicate="onKpiDuplicate"
+          @open-settings="openTileSettings('kpi', kpiByTile(item.i)!.id)"
         />
         <ChartTile
           v-else-if="chartByTile(item.i)"
+          class="tile-enter"
+          :style="{ animationDelay: Math.min(idx, 8) * 50 + 'ms' }"
           :config="chartByTile(item.i)!.config"
           :columns="columns"
           :loading="chartStateOf(chartByTile(item.i)!.id).loading"
           :error="chartStateOf(chartByTile(item.i)!.id).error"
           :data="chartStateOf(chartByTile(item.i)!.id).data"
           :active-key="activeKeyFor(chartByTile(item.i)!.id)"
+          :selected="isSelected('chart', chartByTile(item.i)!.id)"
           @update:config="(cfg) => onChartUpdate(chartByTile(item.i)!.id, cfg)"
           @select="(key) => onChartSelect(chartByTile(item.i)!.id, key)"
           @remove="onChartRemove(chartByTile(item.i)!.id)"
+          @duplicate="onChartDuplicate(chartByTile(item.i)!.id)"
+          @open-settings="openTileSettings('chart', chartByTile(item.i)!.id)"
         />
       </GridItem>
     </GridLayout>
 
     <!-- Empty page hint: a page with no tiles (a freshly added one) prompts for the first. -->
-    <div
+    <EmptyState
       v-else-if="activePage"
-      class="rounded-5 border border-dashed border-outline-gray-3 px-6 py-10 text-center text-xs text-ink-gray-5"
+      title="Your canvas is empty"
+      subtitle="Add a KPI or a chart to start telling the story — Spencer will suggest a layout from your data."
     >
-      This page is empty — add a KPI or chart below.
-    </div>
+      <template #art>
+        <svg
+          width="76" height="56" viewBox="0 0 76 56" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="10" y="9" width="56" height="40" rx="7" />
+          <path d="M20 42V32M32 42V23M44 42V29M56 42V16" />
+          <circle cx="56" cy="16" r="3" fill="currentColor" stroke="none" />
+        </svg>
+      </template>
+    </EmptyState>
 
     <!-- Add toolbar: append a tile to the active page (each lands at the bottom of the grid). -->
-    <div class="js-export-exclude flex flex-wrap items-center gap-2">
+    <div class="js-export-exclude flex flex-wrap items-center gap-3">
       <button
         type="button"
-        class="flex items-center gap-1.5 rounded-3 border border-dashed border-outline-gray-3 px-3 py-1.5 text-xs text-ink-gray-5 transition-colors hover:border-primary-5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+        class="btn btn-dashed"
         :disabled="!activePage || kpis.length >= MAX_KPIS"
         title="Add a KPI card"
         @click="addKpi()"
@@ -1281,7 +1422,7 @@ onBeforeUnmount(() => {
       </button>
       <button
         type="button"
-        class="flex items-center gap-1.5 rounded-3 border border-dashed border-outline-gray-3 px-3 py-1.5 text-xs text-ink-gray-5 transition-colors hover:border-primary-5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+        class="btn btn-dashed"
         :disabled="!activePage || charts.length >= MAX_CHARTS"
         title="Add a chart"
         @click="addChart()"
@@ -1299,10 +1440,11 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 
-/* grid-layout-plus: brand the drag placeholder (the library default is a solid red box). */
+/* grid-layout-plus: brand the drag placeholder (the library default is a solid red box).
+   Uses the primary tint tokens (not a raw slate literal) so it reads on-brand. */
 :deep(.vgl-item--placeholder) {
-  background-color: rgb(100 116 139 / 0.22);
-  border: 1px dashed rgb(100 116 139 / 0.5);
+  background-color: var(--primary-2);
+  border: 1px dashed var(--primary-3);
   border-radius: 12px;
   opacity: 1;
 }

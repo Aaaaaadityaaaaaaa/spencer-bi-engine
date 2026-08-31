@@ -7,7 +7,7 @@ self-closed.
 
 **Legend:** ✅ Built · 🟡 Partial · ⬜ Not built · ⏳ awaiting user sign-off
 
-**Tally:** 7 built (all ⏳) · 10 partial · 17 not built → ~27 features with remaining work.
+**Tally (reconciled 2026-08-29 — see `.ai/CURRENT_STATE.md`):** ~20 built · ~11 partial · ~3 not built. The prior "⬜" counts were stale: Wave 1 transform ops, Wave 4 AI features, scheduling, auth and multi-table were already in the code.
 
 ---
 
@@ -17,27 +17,27 @@ self-closed.
 |---|---|---|---|
 | 1 | Column profiler — null%, distinct, min/max/mean, top values, histogram | ✅⏳ | TASK-015; `profile_service.profile_column` + `ColumnProfilePanel.vue`, opened from grid ⋮ |
 | 2 | Data-quality panel — auto flags | ✅⏳ | TASK-016; `quality_service.assess_table` (high-null/mixed/date-as-text/constant/dupes) + one-click Fix |
-| 3 | Split / merge / extract columns (delimiter or regex capture) | ⬜ | No op; only free-form `calculated_column` SQL. Needs 1 transform op (SPLIT_PART/REGEXP_EXTRACT/CONCAT already allowlisted) |
-| 4 | Date toolkit — parse→date, reformat, extract Y/M/D/weekday | 🟡 | parse text→date built (coercing cast, TASK-017). Missing reformat (STRFTIME) + extract-parts as new cols |
-| 5 | Text toolkit — trim, case, strip-special, pad, regex find-&-replace | 🟡 | `string_normalize` = trim/case/**literal** replace/null-token. Missing regex-replace, strip-special, LPAD/RPAD |
-| 6 | Binning — numeric → ranges/quantiles as category | ⬜ | No op; only hand-rolled CASE. Needs 1 transform op |
-| 7 | Fill down/forward, outlier flagging | ⬜ | `impute_null` is whole-column aggregate only. Needs ordered window (LAG over rowid) + stats-based flag |
-| 8 | In-grid power — multi-sort, drag-reorder, pin/freeze, hide, search, heatmap, inline edit | 🟡 | Only hide/show columns (1 of 7). Rest frontend-only |
+| 3 | Split / merge / extract columns (delimiter or regex capture) | 🟡 | `split_column` (delim/regex) + `date_extract` built in transform_service; CONCAT merge via `calculated_column` works but no dedicated merge op |
+| 4 | Date toolkit — parse→date, reformat, extract Y/M/D/weekday | ✅ | parse via coercing cast (TASK-017); `date_extract` op does reformat (STRFTIME) + extract-parts as new cols |
+| 5 | Text toolkit — trim, case, strip-special, pad, regex find-&-replace | ✅ | `string_normalize` supports trim/case/literal+regex replace/null-token/strip-special/collapse-whitespace/LPAD/RPAD |
+| 6 | Binning — numeric → ranges/quantiles as category | ✅ | `bin_column` op (equal_width / quantile) in transform_service |
+| 7 | Fill down/forward, outlier flagging | ✅ | `fill_down` (LAG over rowid) + `flag_outliers` (zscore) ops in transform_service |
+| 8 | In-grid power — multi-sort, drag-reorder, pin/freeze, hide, search, heatmap, inline edit | ✅ | All built in DataGrid (multi-sort + shift-click, drag-reorder, pin, heatmap, hide/show, search, inline-edit) |
 | 9 | Transform recipe — replayable/exportable step list; re-apply to fresh upload | 🟡 | Server snapshot undo/redo exists; history stores only {op,column,ts}, not full params. No export, no re-apply |
-| 10 | Export cleaned data — CSV / Excel / Parquet / JSON | 🟡 | CSV only (`csvExport.ts`). Missing Excel/Parquet/JSON |
+| 10 | Export cleaned data — CSV / Excel / Parquet / JSON | ✅ | TASK-040; `ExportMenu.vue` + backend `/export` (csv/tsv/json/parquet/xlsx). Query-result rows export (#24) still frontend-unwired |
 
 ## Section B — Canvas (dashboard)
 
 | # | Feature | Status | Reality on disk / what's missing |
 |---|---|---|---|
-| 11 | More chart types (line/area/scatter/pie/stacked/heatmap/treemap/gauge/funnel/box) | 🟡 | Only bar/line/area/hbar/pie rendered (3 ECharts series). Scatter/stacked/heatmap/box need 2-D aggregate contract |
+| 11 | More chart types (line/area/scatter/pie/stacked/heatmap/treemap/gauge/funnel/box) | ✅ | All render: bar/line/area/hbar/pie/stacked/heatmap/treemap/funnel/scatter/box/gauge. Scatter+box added (Wave 5, TASK-042) |
 | 12 | Slicers / cross-filter every tile | ✅⏳ | Cross-filter substrate live (`ChartCanvas` + `AggregateFilter`). One equality slice; no standalone slicer widgets |
 | 13 | Global date-range picker + drill-down | 🟡 | Drill-down built (= cross-filter). Date-range picker not built; wire is equality-only |
 | 14 | KPI deltas — sparkline, ▲% vs prior, target thresholds | ⬜ | `KpiCard` renders a bare scalar; `KpiConfig` has no target/comparison fields |
-| 15 | Drag/resize tile grid; save/load named dashboards | ⬜ | Fixed CSS grid; "saved dashboards deliberately out of scope for v1"; no persistence |
+| 15 | Drag/resize tile grid; save/load named dashboards | ✅ | grid-layout-plus drag/resize (TASK-034) + named save/load via useDashboards (TASK-035) |
 | 16 | Dashboard templates auto-built from schema | 🟡 | `ChartCanvas.seed()` = one generic heuristic. No named templates/picker |
 | 17 | Export dashboard PNG/PDF; present/fullscreen | 🟡 | Per-tile PNG only. No dashboard export, no PDF, no fullscreen |
-| 18 | "Explain this chart" (LLM narrates) | ⬜ | No endpoint/affordance |
+| 18 | "Explain this chart" (LLM narrates) | ✅ | `POST /explain-chart` + `ChartTile` "Explain" button |
 
 ## Section C — Query Engine (AI SQL)
 
@@ -45,30 +45,31 @@ self-closed.
 |---|---|---|---|
 | 19 | Query history (re-run) + saved/named + favorites | ✅⏳ | TASK-012; `useQueryHistory` (localStorage) + `QueryHistory.vue`. "Favorites" == saved (no separate star) |
 | 20 | Schema-aware autocomplete + clickable pills | ✅⏳ | `useCodeMirror.sqlExtension` + insert chips. Single-table; chips insert text (not live embedded pills) |
-| 21 | Conversational refinement ("now group by month") | ⬜ | No turn memory; prev_sql only used inside the self-correction loop |
-| 22 | Explain / optimize / fix SQL (turn DuckDB error → fix) | ⬜ | Raw error shown; internal `_classify_db_error` exists but not user-facing |
-| 23 | Result → Canvas tile / Result → new working table | ⬜ | Results read-only; `/execute` is rolled-back sandbox (no materialize path) |
-| 24 | Export results — CSV/Excel/clipboard; multiple tabs | 🟡 | CSV only. Missing Excel/clipboard/multi-tab |
+| 21 | Conversational refinement ("now group by month") | ✅ | `AskTurn` history threaded through `/ask` + `QueryConsole` turns |
+| 22 | Explain / optimize / fix SQL (turn DuckDB error → fix) | ✅ | `/sql/assist` (explain/fix/optimize) wired in `QueryConsole` |
+| 23 | Result → Canvas tile / Result → new working table | ✅ | `/materialize` persists a reviewed SELECT as a new table; `seedChartOnCanvas` opens a tile |
+| 24 | Export results — CSV/Excel/clipboard; multiple tabs | 🟡 | Excel (.xlsx) wired via /export/rows (TASK-041). CSV/clipboard client-only; multi-tab missing |
 | 25 | Parameterized queries (variables at run time) | ⬜ | SQL sent verbatim; no `:param`/`{{var}}` handling |
 
 ## Section D — Smart / AI (cross-cutting)
 
 | # | Feature | Status | Reality on disk / what's missing |
 |---|---|---|---|
-| 26 | Auto-EDA on upload — 5 questions, one-click run | ⬜ | Not built; AI surface is only /ask, /execute, /instructions |
+| 26 | Auto-EDA on upload — 5 questions, one-click run | ✅ | `/suggest-questions` + `SuggestedQuestions` strip in `QueryEngineView` |
 | 27 | Auto starter-dashboard from schema | ✅⏳ | `ChartCanvas.seed()` — deterministic (not LLM), ephemeral (lost on reload) |
 | 28 | Auto-cleaning suggestions (date-as-text → cast, one-click) | ✅⏳ | TASK-016/017 — deterministic, genuinely one-click; rule-based not LLM |
-| 29 | Data storytelling (LLM narrative of a dashboard/dataset) | ⬜ | Not built |
-| 30 | Chart-type recommendation for a chosen field | ⬜ | Only implicit seed heuristic (temporal→line else bar) |
+| 29 | Data storytelling (LLM narrative of a dashboard/dataset) | ✅ | `/narrate` + `ChartCanvas` "Story" affordance |
+| 30 | Chart-type recommendation for a chosen field | ✅ | `/recommend-chart` + `ChartTile` "Recommend" button |
 
 ## Section E — Data in/out
 
 | # | Feature | Status | Reality on disk / what's missing |
 |---|---|---|---|
 | 31 | More upload formats — xlsx/JSON/Parquet/TSV/paste | ⬜ | **CSV only** (`read_csv_auto`); allowlist default `csv`. UI advertises `.parquet` but backend rejects → real bug |
-| 32 | Multi-table switcher UI | ⬜ | Backend fully supports multi-table; **no frontend switcher**. Cheapest win |
+| 32 | Multi-table switcher UI | ✅ | TASK-039; `TableSwitcher.vue` + `App.vue` mount. Switches active table across all tabs; "Add table" uploads a secondary |
 | 33 | Session export/import | ⬜ | No serialize/restore; DELETE is a stub |
 | 34 | Shareable read-only dashboard snapshot | ⬜ | Not built; needs persistence + revisiting single-user model |
+| 35 | Original table name in Query Engine (alias resolution) | ✅ | Physical name is `t_<uuid>_<name>` for isolation; user can now write/see the original name — AST-level rewrite to physical before the tenant-isolation validator (TASK-043) |
 
 ---
 
@@ -105,7 +106,7 @@ Waves are reorderable on request; #32 (multi-table switcher) is the single cheap
 
 ## Pending sign-offs (built, in `tasks/active/`)
 
-TASK-008, 009, 010, 012, 013, 015, 016, 017 — implemented + self-reviewed, awaiting user sign-off.
+TASK-008, 009, 010, 012, 013, 015, 016, 017 — **SIGNED OFF by user on 2026-08-29.**
 Building further on top of these compounds review debt; clearing them is the user's call.
 
 ## Constraints that shape the plan

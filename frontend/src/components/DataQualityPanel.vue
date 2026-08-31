@@ -360,7 +360,7 @@ function onFixAlt(f: QualityFinding): void {
             <button
               v-if="f.suggested_op"
               type="button"
-              class="inline-flex shrink-0 items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-9"
+              class="btn btn-ghost shrink-0"
               :title="`Fix: ${fixLabel(f)}`"
               @click="onFix(f)"
             >
@@ -370,7 +370,7 @@ function onFixAlt(f: QualityFinding): void {
             <button
               v-if="f.alt_op"
               type="button"
-              class="inline-flex shrink-0 items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1 text-xs font-medium text-ink-gray-7 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-9"
+              class="btn btn-ghost shrink-0"
               :title="`Fix: ${altLabel(f)}`"
               @click="onFixAlt(f)"
             >

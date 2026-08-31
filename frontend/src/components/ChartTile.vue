@@ -9,8 +9,8 @@
 // this chart" (narrate the series already in hand) and #30 "Recommend a chart type"
 // (suggest + apply a chartType for the current dimension). Both are one-shot request →
 // display; neither participates in dataVersion refresh.
-import { computed, nextTick, ref } from 'vue'
-import { AlertCircle, BarChart3, Bold, Download, GripVertical, Hash, Lightbulb, Loader2, Palette, Pencil, SlidersHorizontal, Sparkles, X } from '@lucide/vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { AlertCircle, BarChart3, Bold, Copy, Download, GripVertical, Lightbulb, ListOrdered, Loader2, Palette, Pencil, SlidersHorizontal, Sparkles, X } from '@lucide/vue'
 import type { EChartsCoreOption } from 'echarts/core'
 import type {
   AggregateKey,
@@ -22,22 +22,27 @@ import type {
   ColumnMeta,
   ExplainChartRequest,
 } from '../types'
-import { supportsBreakdown } from '../types'
+import { supportsBreakdown, supportsMeasureY } from '../types'
 import { useSession } from '../composables/useSession'
+import { formatNumber, resolvedColor } from '../composables/useDashboardSettings'
 import { apiErrorMessage, explainChart, recommendChart } from '../services/api'
 import { useEchart } from '../composables/useEchart'
 import { AGG_LABEL, allowedAggregations, coerceAggregation } from '../utils/aggregations'
-import { dimensionColumns } from '../utils/columnKind'
+import { dimensionColumns, numericColumns } from '../utils/columnKind'
 import {
   asHexInput,
   CHART_BG_PALETTE,
   CHART_FONT,
   CHART_INK,
+  CHART_INK_FAINT,
   CHART_PALETTE,
+  CHART_PALETTES,
   CHART_PRIMARY,
   CHART_SPLIT_LINE,
+  CHART_WHITE,
   normalizeHex,
-  paletteColor,
+  paletteColorFor,
+  paletteById,
 } from '../utils/chartPalette'
 
 const props = defineProps<{
@@ -49,13 +54,19 @@ const props = defineProps<{
   // Set only on the tile that OWNS the active cross-filter: the selected key, so its
   // bar/slice stays lit while the rest dim. `undefined` => this tile isn't the source.
   activeKey?: AggregateKey
+  // True while this tile's editor is shown in the side drawer (Power BI–style). When false
+  // the inline controls are hidden so the visual stays clean; when true they teleport to the drawer.
+  selected?: boolean
 }>()
 
 const emit = defineEmits<{
   'update:config': [config: ChartConfig]
   remove: []
+  duplicate: []
   // A bar/slice was clicked: the raw dimension key, for ChartCanvas to cross-filter on.
   select: [key: AggregateKey]
+  // The tile body was clicked — ChartCanvas opens this tile's settings in the side drawer.
+  'open-settings': []
 }>()
 
 const { sessionUuid } = useSession()
@@ -72,6 +83,10 @@ const CHART_TYPES: { value: ChartType; label: string }[] = [
   { value: 'heatmap', label: 'Heatmap' },
   { value: 'treemap', label: 'Treemap' },
   { value: 'funnel', label: 'Funnel' },
+  { value: 'scatter', label: 'Scatter' },
+  { value: 'box', label: 'Box plot' },
+  { value: 'gauge', label: 'Gauge' },
+  { value: 'slicer', label: 'Slicer (Dropdown)' },
 ]
 // Chart types that draw one sub-series per breakdown value (2-D). The Breakdown picker
 // shows only for these; the others ignore `config.series` (ChartCanvas drops it from the
@@ -101,6 +116,11 @@ const seriesOptions = computed(() =>
   dimOptions.value.filter((c) => c.name !== props.config.dimension),
 )
 
+// Wave 5 scatter: a Y-measure picker, shown only for the scatter type. The measure
+// select already holds the X axis; this holds the Y axis. Only numeric columns qualify.
+const showYMeasure = computed(() => supportsMeasureY(props.config.chartType))
+const yMeasureOptions = computed(() => numericColumns(props.columns))
+
 const measureLabel = computed(() =>
   props.config.measure === null
     ? 'Count of rows'
@@ -112,7 +132,7 @@ const measureLabel = computed(() =>
 // mapping is orientation-aware and matches the on-chart axis titles below: a horizontal bar
 // swaps the axes (category → Y), and the non-cartesian shapes (pie/treemap/funnel) have no
 // axes so they read Category / Value. `series` is only shown when supportsBreakdown().
-const axisLabels = computed<{ dim: string; series: string; measure: string }>(() => {
+const axisLabels = computed<{ dim: string; series: string; measure: string; measureY?: string }>(() => {
   switch (props.config.chartType) {
     case 'hbar':
       return { dim: 'Y axis', series: 'Breakdown', measure: 'X axis' }
@@ -122,6 +142,10 @@ const axisLabels = computed<{ dim: string; series: string; measure: string }>(()
     case 'treemap':
     case 'funnel':
       return { dim: 'Category', series: 'Breakdown', measure: 'Value' }
+    case 'slicer':
+      return { dim: 'Filter column', series: 'Breakdown', measure: 'Value (ignored)' }
+    case 'scatter':
+      return { dim: 'Colour / group', series: 'Breakdown', measure: 'X axis', measureY: 'Y axis' }
     default: // bar / line / area / stacked → standard vertical cartesian
       return { dim: 'X axis', series: 'Breakdown', measure: 'Y axis' }
   }
@@ -140,6 +164,12 @@ const is2D = computed(() => {
     (d.matrix?.length ?? 0) > 0
   )
 })
+
+const isCartesian = computed(() => ['bar', 'line', 'area', 'hbar', 'stacked', 'scatter', 'box'].includes(props.config.chartType))
+const isLine = computed(() => ['line', 'area'].includes(props.config.chartType))
+const isArea = computed(() => props.config.chartType === 'area')
+const canStack = computed(() => ['stacked', 'area', 'bar'].includes(props.config.chartType))
+const canLegend = computed(() => is2D.value || ['pie', 'funnel', 'scatter'].includes(props.config.chartType))
 
 const autoTitle = computed(() => {
   const base = props.config.dimension
@@ -177,13 +207,22 @@ function cancelTitle(): void {
 // Colour swatch popover (ResultsTable's menuOpen + fixed-backdrop idiom, no doc listeners).
 const colorOpen = ref(false)
 const colorPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+const colorMaxH = ref(360)
 function toggleColor(e: MouseEvent): void {
   if (colorOpen.value) {
     colorOpen.value = false
     return
   }
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  colorPos.value = { x: r.right, y: r.bottom }
+  const margin = 8
+  const estH = 380
+  const vh = window.innerHeight
+  // Anchor below the button, but flip above it when there isn't room — keeps the whole
+  // menu on-screen so the lower swatches/inputs stay reachable (and scrollable).
+  let top = r.bottom + 4
+  if (top + estH > vh - margin) top = Math.max(margin, r.top - estH - 4)
+  colorPos.value = { x: r.right, y: top }
+  colorMaxH.value = Math.max(160, Math.min(estH, vh - top - margin))
   colorOpen.value = true
 }
 // The popover carries TWO targets now (series colour + card background) plus custom
@@ -254,11 +293,36 @@ const missingColumn = computed(() => {
   )
 })
 
-const hasData = computed(() => (props.data?.keys.length ?? 0) > 0)
+// The "is there anything to draw" test is type-dependent: scatter reports `points`,
+// box reports `boxes`, gauge reads the single KPI `values`, everything else reports `keys`.
+const hasData = computed(() => {
+  const d = props.data
+  if (!d) return false
+  switch (props.config.chartType) {
+    case 'scatter':
+      return (d.points?.length ?? 0) > 0
+    case 'box':
+      return (d.boxes?.length ?? 0) > 0
+    case 'gauge':
+      return (d.values?.length ?? 0) > 0
+    default:
+      return (d.keys?.length ?? 0) > 0
+  }
+})
 
 // When the tile has data in hand but the chosen type can't draw it yet (a heatmap with
 // no breakdown selected), guide the user instead of leaving a blank canvas.
 const plotHint = computed<string | null>(() => {
+  // Wave 5 scatter: prompt for the two measures up front, independent of data arrival.
+  if (props.config.chartType === 'scatter') {
+    if (!props.config.measure || !props.config.measureY) return 'Pick an X measure and a Y measure.'
+    return null
+  }
+  // Wave 5 box plot: needs a category (x) and a numeric measure (y).
+  if (props.config.chartType === 'box') {
+    if (!props.config.dimension) return 'Pick a category field (x) and a measure (y).'
+    return null
+  }
   if (props.config.chartType !== 'heatmap') return null
   if (!hasData.value) return null // the standard empty-state overlay covers this
   if (props.config.series === null) return 'Pick a breakdown column to build the heatmap.'
@@ -275,19 +339,8 @@ function toNumber(v: AggregateValue): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-const axisLabelStyle = { color: CHART_INK, fontFamily: CHART_FONT, fontSize: 11 }
-// TASK-038: axis-title style — a touch larger + semibold so the "what's on X / what's on Y"
-// caption reads distinctly from the tick labels above it.
-const axisNameStyle = { color: CHART_INK, fontFamily: CHART_FONT, fontSize: 12, fontWeight: 600 }
-
-// TASK-033 #4: on-graph value labels. `showValues` turns them on across every shape; the
-// number formatting matches the KPI cards (localised, <=2 fractional digits). A null/NaN
-// datum (an ISO-string metric dropped to null) renders no label rather than "NaN".
-const dataLabelStyle = { color: CHART_INK, fontFamily: CHART_FONT, fontSize: 11 }
 function fmtLabelValue(v: unknown): string {
-  return typeof v === 'number' && Number.isFinite(v)
-    ? v.toLocaleString(undefined, { maximumFractionDigits: 2 })
-    : ''
+  return typeof v === 'number' && Number.isFinite(v) ? formatNumber(v) : ''
 }
 
 // Cross-filter highlight: when this tile owns the active slice, the selected key stays
@@ -297,11 +350,43 @@ function itemOpacity(key: AggregateKey): number {
   return props.activeKey === undefined || key === props.activeKey ? 1 : 0.35
 }
 
-const option = computed<EChartsCoreOption | null>(() => {
-  const d = props.data
-  if (!d) return null
-  const t = props.config.chartType
-  const showValues = props.config.showValues ?? false
+  const option = computed<EChartsCoreOption | null>(() => {
+    const d = props.data
+    if (!d) return null
+    const axisLabelStyle = { color: CHART_INK, fontFamily: props.config.fontFamily || CHART_FONT, fontSize: props.config.valueFontSize || 11 }
+    const axisNameStyle = { color: CHART_INK, fontFamily: props.config.fontFamily || CHART_FONT, fontSize: (props.config.valueFontSize || 11) + 1, fontWeight: 600 }
+    const dataLabelStyle = { color: CHART_INK, fontFamily: props.config.fontFamily || CHART_FONT, fontSize: props.config.valueFontSize || 11 }
+    const t = props.config.chartType
+    const showValues = props.config.showValues ?? false
+    if (t === 'slicer') return null
+    // TASK-044: drawer-driven presentation toggles (all default-on for back-compat).
+    const showLegend = props.config.showLegend !== false
+    const showGrid = props.config.showGrid !== false
+    const yScaleType = props.config.yScale === 'log' ? 'log' : 'value'
+    const smoothLines = props.config.smooth !== false
+    const showMarkers = props.config.showMarkers !== false
+    const areaOpacity = props.config.areaOpacity ?? 0.2
+    const pc = (j: number) => paletteColorFor(props.config.palette, j)
+    const refVal = props.config.referenceValue ?? null
+    const legendOf = (extra: Record<string, unknown>) => (showLegend ? extra : { show: false })
+    const markLineOf = () =>
+      refVal === null
+        ? undefined
+        : {
+            silent: true,
+            symbol: 'none' as const,
+            lineStyle: { color: CHART_INK_FAINT, type: 'dashed' as const, width: 1 },
+            label: { show: true, position: 'end' as const, color: CHART_INK, fontSize: 10, formatter: 'ref' },
+            data: [{ yAxis: refVal }],
+          }
+    // Category sort permutation. 'auto' mirrors Top-N (value DESC); 'alpha' sorts labels.
+    const sortPerm = <T>(keys: T[], vals: Array<number | null>): number[] => {
+      const dir = props.config.sortDir ?? 'auto'
+      const idx = keys.map((_, i) => i)
+      if (dir === 'asc') return idx.sort((a, b) => (vals[a] ?? Infinity) - (vals[b] ?? Infinity))
+      if (dir === 'alpha') return idx.sort((a, b) => String(keys[a]).localeCompare(String(keys[b])))
+      return idx.sort((a, b) => (vals[b] ?? -Infinity) - (vals[a] ?? -Infinity))
+    }
 
   // Category-axis chrome, shared by every cartesian shape (1-D, 2-D and heatmap).
   // `flat` suppresses the >8-entry label rotation (a horizontal bar reads labels flat).
@@ -330,7 +415,7 @@ const option = computed<EChartsCoreOption | null>(() => {
   // squeezing the numbers off small tiles under the old 'all' containment. hbar's value axis
   // sits on X, so it passes nameRotate 0 to keep that title horizontal below the axis.
   const makeValueAxis = (name?: string | null, nameGap = 46, nameRotate = 90) => ({
-    type: 'value' as const,
+    type: yScaleType,
     name: name || undefined,
     nameLocation: 'middle' as const,
     nameGap,
@@ -338,8 +423,54 @@ const option = computed<EChartsCoreOption | null>(() => {
     nameTextStyle: axisNameStyle,
     axisLabel: axisLabelStyle,
     axisLine: { show: false },
-    splitLine: { lineStyle: { color: CHART_SPLIT_LINE } },
+    splitLine: { show: showGrid, lineStyle: { color: CHART_SPLIT_LINE } },
   })
+
+  // ---- Scatter (Wave 5) -----------------------------------------------------------
+  // Raw (x, y) points from the backend. Optional `dimension` becomes a colour group;
+  // each group is its own series so the legend splits them. Null x/y points are skipped.
+  if (t === 'scatter') {
+    const pts = (d.points ?? []).filter(
+      (p) => toNumber(p.x) !== null && toNumber(p.y) !== null,
+    )
+    if (pts.length === 0) return null
+    const groups = new Map<string, Array<[number, number]>>()
+    for (const p of pts) {
+      const x = toNumber(p.x)!
+      const y = toNumber(p.y)!
+      const gkey = p.group === undefined ? '' : String(p.group)
+      if (!groups.has(gkey)) groups.set(gkey, [])
+      groups.get(gkey)!.push([x, y])
+    }
+    const entries = [...groups.entries()]
+    const series = entries.map(([gkey, data], j) => ({
+      type: 'scatter' as const,
+      name: gkey === '' ? '(all)' : gkey,
+      data,
+      symbolSize: 7,
+      itemStyle: { color: pc(j) },
+      markLine: markLineOf(),
+    }))
+    return {
+      grid: {
+        left: 24,
+        right: 16,
+        top: entries.length > 1 ? 34 : 18,
+        bottom: 22,
+        outerBoundsMode: 'same',
+        outerBoundsContain: 'axisLabel',
+      },
+      tooltip: {
+        trigger: 'item',
+        formatter: (p: { seriesName: string; value: [number, number] }) =>
+          `${p.seriesName}: (${p.value[0]}, ${p.value[1]})`,
+      },
+      legend: entries.length > 1 ? legendOf({ type: 'scroll', top: 4, textStyle: axisLabelStyle }) : { show: false },
+      xAxis: makeValueAxis(props.config.xTitle ?? props.config.measure ?? 'x', 40, 0),
+      yAxis: makeValueAxis(props.config.yTitle ?? axisLabels.value.measureY ?? 'Y axis'),
+      series,
+    }
+  }
 
   // ---- 2-D breakdown shapes (dimension × series → matrix) --------------------------
   if (is2D.value) {
@@ -416,7 +547,7 @@ const option = computed<EChartsCoreOption | null>(() => {
               fontSize: 10,
               formatter: (p: { value: [number, number, number] }) => fmtLabelValue(p.value[2]),
             },
-            itemStyle: { borderColor: 'oklch(1 0 0)', borderWidth: 1 },
+            itemStyle: { borderColor: CHART_WHITE, borderWidth: 1 },
           },
         ],
       }
@@ -427,23 +558,34 @@ const option = computed<EChartsCoreOption | null>(() => {
     // stack onto one total; `bar` groups side-by-side; `line` overlays.
     const isBar = t === 'bar' || t === 'stacked'
     const stack = t === 'stacked' || t === 'area' ? 'total' : undefined
+    // TASK-044: optional 100% stacked — each row's cells become % of that row's total.
+    const pct = props.config.stacked100 === true && !!stack
+    const rowTotals = matrix.map((row) => row.reduce((s: number, raw) => s + (toNumber(raw) ?? 0), 0))
+    const rowOrder = sortPerm(xlabels, rowTotals)
+    displayOrder = rowOrder
+    const xlabelsS = rowOrder.map((i) => xlabels[i])
+    const matrixS = rowOrder.map((i) => matrix[i])
+    const cellVal = (raw: AggregateValue, ri: number): number =>
+      pct && rowTotals[ri] ? ((toNumber(raw) ?? 0) / rowTotals[ri]) * 100 : (toNumber(raw) ?? 0)
     const series = slabels.map((name, j) => ({
       type: (isBar ? 'bar' : 'line') as 'bar' | 'line',
       name,
       stack,
-      data: matrix.map((row) => toNumber(row[j])),
+      data: matrixS.map((row, ri) => cellVal(row[j], ri)),
       barMaxWidth: 48,
-      itemStyle: { color: paletteColor(j) },
-      lineStyle: isBar ? undefined : { width: 2, color: paletteColor(j) },
-      areaStyle: t === 'area' ? { opacity: 0.2, color: paletteColor(j) } : undefined,
+      itemStyle: { color: pc(j) },
+      lineStyle: isBar ? undefined : { width: 2, color: pc(j) },
+      areaStyle: t === 'area' ? { opacity: areaOpacity, color: pc(j) } : undefined,
       label: {
         show: showValues,
         position: isBar && stack ? 'inside' : 'top',
         ...dataLabelStyle,
         formatter: (p: { value: number | null }) => fmtLabelValue(p.value),
       },
-      smooth: !isBar,
+      smooth: smoothLines && !isBar,
+      symbol: showMarkers ? 'circle' : 'none',
       symbolSize: 6,
+      markLine: markLineOf(),
     }))
     return {
       grid: {
@@ -455,9 +597,11 @@ const option = computed<EChartsCoreOption | null>(() => {
         outerBoundsContain: 'axisLabel',
       },
       tooltip: { trigger: 'axis', axisPointer: { type: isBar ? 'shadow' : 'line' } },
-      legend: { type: 'scroll', top: 4, textStyle: axisLabelStyle },
-      xAxis: makeCategoryAxis(xlabels, false, props.config.dimension),
-      yAxis: makeValueAxis(measureLabel.value),
+      legend: legendOf({ type: 'scroll', top: 4, textStyle: axisLabelStyle }),
+      xAxis: makeCategoryAxis(xlabelsS, false, props.config.xTitle ?? props.config.dimension),
+      yAxis: makeValueAxis(
+        props.config.yTitle ?? (pct ? `${measureLabel.value} (%)` : measureLabel.value),
+      ),
       series,
     }
   }
@@ -475,13 +619,13 @@ const option = computed<EChartsCoreOption | null>(() => {
   if (t === 'pie') {
     return {
       tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-      legend: {
+      legend: legendOf({
         type: 'scroll',
         orient: 'vertical',
         right: 8,
         top: 'middle',
         textStyle: axisLabelStyle,
-      },
+      }),
       series: [
         {
           type: 'pie',
@@ -495,11 +639,11 @@ const option = computed<EChartsCoreOption | null>(() => {
             fontFamily: CHART_FONT,
             fontSize: 11,
           },
-          itemStyle: { borderColor: 'oklch(1 0 0)', borderWidth: 2 },
+          itemStyle: { borderColor: CHART_WHITE, borderWidth: 2 },
           data: labels.map((name, i) => ({
             name,
             value: values[i] ?? 0,
-            itemStyle: { color: paletteColor(i), opacity: itemOpacity(d.keys[i]) },
+            itemStyle: { color: pc(i), opacity: itemOpacity(d.keys[i]) },
           })),
         },
       ],
@@ -518,12 +662,12 @@ const option = computed<EChartsCoreOption | null>(() => {
           roam: false,
           nodeClick: false,
           breadcrumb: { show: false },
-          label: { show: true, formatter: showValues ? '{b}\n{c}' : '{b}', color: 'oklch(1 0 0)', fontFamily: CHART_FONT },
-          itemStyle: { borderColor: 'oklch(1 0 0)', borderWidth: 2, gapWidth: 2 },
+          label: { show: true, formatter: showValues ? '{b}\n{c}' : '{b}', color: CHART_WHITE, fontFamily: CHART_FONT },
+          itemStyle: { borderColor: CHART_WHITE, borderWidth: 2, gapWidth: 2 },
           data: labels.map((name, i) => ({
             name,
             value: values[i] ?? 0,
-            itemStyle: { color: paletteColor(i), opacity: itemOpacity(d.keys[i]) },
+            itemStyle: { color: pc(i), opacity: itemOpacity(d.keys[i]) },
           })),
         },
       ],
@@ -533,7 +677,7 @@ const option = computed<EChartsCoreOption | null>(() => {
   if (t === 'funnel') {
     return {
       tooltip: { trigger: 'item', formatter: '{b}: {c}' },
-      legend: { type: 'scroll', bottom: 0, textStyle: axisLabelStyle },
+      legend: legendOf({ type: 'scroll', bottom: 0, textStyle: axisLabelStyle }),
       series: [
         {
           type: 'funnel',
@@ -549,17 +693,84 @@ const option = computed<EChartsCoreOption | null>(() => {
             show: true,
             position: 'inside',
             formatter: showValues ? '{b} {c}' : '{b}',
-            color: 'oklch(1 0 0)',
+            color: CHART_WHITE,
             fontFamily: CHART_FONT,
             fontSize: 11,
           },
           labelLine: { show: false },
-          itemStyle: { borderColor: 'oklch(1 0 0)', borderWidth: 1 },
+          itemStyle: { borderColor: CHART_WHITE, borderWidth: 1 },
           data: labels.map((name, i) => ({
             name,
             value: values[i] ?? 0,
-            itemStyle: { color: paletteColor(i), opacity: itemOpacity(d.keys[i]) },
+            itemStyle: { color: pc(i), opacity: itemOpacity(d.keys[i]) },
           })),
+        },
+      ],
+    }
+  }
+
+  // ---- Wave 5 box plot ----------------------------------------------------------
+  if (t === 'box') {
+    const bx = (d.boxes ?? []).filter((b) => b.min !== null && b.max !== null)
+    if (bx.length === 0) return null
+    const cats = bx.map((b) => (b.key === null ? '(null)' : String(b.key)))
+    const data = bx.map((b) => [
+      toNumber(b.min),
+      toNumber(b.q1),
+      toNumber(b.median),
+      toNumber(b.q3),
+      toNumber(b.max),
+    ])
+    return {
+      grid: { left: 24, right: 16, top: 16, bottom: 22, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
+      tooltip: {
+        trigger: 'item',
+        formatter: (p: { dataIndex: number }) => {
+          const b = bx[p.dataIndex]
+          return `${cats[p.dataIndex]}<br/>min ${fmtLabelValue(b.min)}<br/>Q1 ${fmtLabelValue(b.q1)}<br/>median ${fmtLabelValue(b.median)}<br/>Q3 ${fmtLabelValue(b.q3)}<br/>max ${fmtLabelValue(b.max)}`
+        },
+      },
+      xAxis: makeCategoryAxis(cats, false, props.config.dimension),
+      yAxis: makeValueAxis(measureLabel.value),
+      series: [
+        {
+          type: 'boxplot',
+          data,
+          itemStyle: { color: CHART_PRIMARY, borderColor: CHART_INK, borderWidth: 1 },
+        },
+      ],
+    }
+  }
+
+  // ---- Wave 5 gauge (single KPI dial) -------------------------------------------
+  if (t === 'gauge') {
+    const v = toNumber(d.values?.[0] ?? null)
+    if (v === null) return null
+    const gmax = v <= 0 ? 1 : Math.ceil(v * 1.2)
+    return {
+      tooltip: { formatter: () => fmtLabelValue(v) },
+      series: [
+        {
+          type: 'gauge',
+          min: 0,
+          max: gmax,
+          startAngle: 210,
+          endAngle: -30,
+          progress: { show: true, width: 12 },
+          axisLine: { lineStyle: { width: 12, color: [[1, CHART_SPLIT_LINE]] } },
+          axisTick: { show: false },
+          splitLine: { show: false },
+          axisLabel: { show: false },
+          pointer: { show: true, length: '60%', width: 4, itemStyle: { color: CHART_PRIMARY } },
+          detail: {
+            valueAnimation: true,
+            fontSize: 22,
+            fontFamily: CHART_FONT,
+            color: CHART_INK,
+            offsetCenter: [0, '40%'],
+            formatter: (val: number) => fmtLabelValue(val),
+          },
+          data: [{ value: v }],
         },
       ],
     }
@@ -572,18 +783,24 @@ const option = computed<EChartsCoreOption | null>(() => {
   const isBarSeries = t === 'bar' || t === 'hbar' || t === 'stacked'
   const isArea = t === 'area'
   // TASK-033 #3: a per-tile colour overrides the brand primary for this single-series shape.
-  // (A breakdown draws the categorical palette instead — handled in the 2-D block above.)
-  const accent = props.config.color || CHART_PRIMARY
+  // (A breakdown draws the categorical palette instead)
+  const accent = props.config.color ? resolvedColor(props.config.color) : paletteById(props.config.palette)[0]
 
-  const categoryAxis = makeCategoryAxis(labels, isHorizontal, props.config.dimension)
+  // TASK-044: optional category re-sort (display only; clicks map back via `displayOrder`).
+  const order1 = sortPerm(labels, values)
+  displayOrder = order1
+  const labelsS = order1.map((i) => labels[i])
+  const valuesS = order1.map((i) => values[i])
+
+  const categoryAxis = makeCategoryAxis(labelsS, isHorizontal, props.config.xTitle ?? props.config.dimension)
 
   // Per-bar opacity only when this tile owns the cross-filter (and only for bar/hbar —
   // a line/area with a single bright point would read as broken). Otherwise the series
   // takes the plain number array, keeping the unfiltered path allocation-free.
   const seriesData =
     props.activeKey !== undefined && isBarSeries
-      ? values.map((v, i) => ({ value: v, itemStyle: { opacity: itemOpacity(d.keys[i]) } }))
-      : values
+      ? valuesS.map((v, i) => ({ value: v, itemStyle: { opacity: itemOpacity(d.keys[order1[i]]) } }))
+      : valuesS
 
   return {
     // ECharts 6 deprecated `grid.containLabel`; `outerBoundsMode: 'same'` +
@@ -603,8 +820,8 @@ const option = computed<EChartsCoreOption | null>(() => {
     // hbar swaps the axes: value on X (bottom, flat number labels → small gap, title stays
     // horizontal below → nameRotate 0), category on Y. Every other cartesian shape keeps
     // category on X, value on Y (with a slim vertical Y title, nameRotate 90 by default).
-    xAxis: isHorizontal ? makeValueAxis(measureLabel.value, 30, 0) : categoryAxis,
-    yAxis: isHorizontal ? categoryAxis : makeValueAxis(measureLabel.value),
+    xAxis: isHorizontal ? makeValueAxis(props.config.yTitle ?? measureLabel.value, 30, 0) : categoryAxis,
+    yAxis: isHorizontal ? categoryAxis : makeValueAxis(props.config.yTitle ?? measureLabel.value),
     series: [
       {
         type: isBarSeries ? 'bar' : 'line',
@@ -622,13 +839,20 @@ const option = computed<EChartsCoreOption | null>(() => {
           borderRadius: isBarSeries ? (isHorizontal ? [0, 3, 3, 0] : [3, 3, 0, 0]) : 0,
         },
         lineStyle: isBarSeries ? undefined : { width: 2, color: accent },
-        areaStyle: isArea ? { opacity: 0.15, color: accent } : undefined,
+        areaStyle: isArea ? { opacity: areaOpacity, color: accent } : undefined,
+        symbol: showMarkers ? 'circle' : 'none',
         symbolSize: 6,
-        smooth: !isBarSeries,
+        smooth: smoothLines && !isBarSeries,
+        markLine: markLineOf(),
       },
     ],
   }
 })
+
+// TASK-044: when the category order is re-sorted for display, ECharts' dataIndex no longer
+// lines up with `d.keys`. `displayOrder` holds the permutation (display index → original
+// index) so a click still maps back to the correct raw key for cross-filtering.
+let displayOrder: number[] = []
 
 // Map an ECharts click (reported by data index) back to the raw dimension key and bubble
 // it up; ChartCanvas turns it into a cross-filter. Only the types whose dataIndex indexes
@@ -637,7 +861,9 @@ function onSliceClick(dataIndex: number): void {
   if (!CROSS_FILTER_TYPES.has(props.config.chartType)) return
   const d = props.data
   if (!d || dataIndex < 0 || dataIndex >= d.keys.length) return
-  emit('select', d.keys[dataIndex])
+  const orig = displayOrder.length ? displayOrder[dataIndex] ?? dataIndex : dataIndex
+  if (orig < 0 || orig >= d.keys.length) return
+  emit('select', d.keys[orig])
 }
 
 const echart = useEchart(chartEl, option, onSliceClick)
@@ -675,12 +901,68 @@ function onMeasureChange(raw: string): void {
   })
 }
 
+function onMeasureYChange(raw: string): void {
+  emit('update:config', { ...props.config, measureY: raw === '' ? null : raw })
+}
+
 function onAggChange(raw: string): void {
   emit('update:config', { ...props.config, aggregation: raw as Aggregation })
 }
 
 function onTypeChange(raw: string): void {
-  emit('update:config', { ...props.config, chartType: raw as ChartType })
+  const chartType = raw as ChartType
+  // Switching away from scatter drops the Y measure so a stale value is never sent.
+  emit('update:config', {
+    ...props.config,
+    chartType,
+    measureY: chartType === 'scatter' ? props.config.measureY ?? null : null,
+  })
+}
+
+// TASK-044: generic config patch used by the style drawer controls.
+function patch(p: Partial<ChartConfig>): void {
+  emit('update:config', { ...props.config, ...p })
+}
+
+// TASK-044: per-tile card chrome (border / corner radius / drop shadow) driven by config.
+const cardClass = computed(() => {
+  const r = props.config.radius ?? 'md'
+  const radius = r === 'sm' ? 'rounded-3' : r === 'lg' ? 'rounded-6' : 'rounded-5'
+  const border = props.config.border === false ? 'border-0' : 'border border-outline-gray-1 shadow-sm'
+  const shadow = props.config.shadow === false ? '' : 'hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]'
+  return `group tile-drag-handle flex h-full flex-col overflow-hidden bg-surface-base ${radius} ${border} ${shadow}`
+})
+
+function clampPct(raw: string): number | null {
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : null
+}
+function numOrNull(raw: string): number | null {
+  const s = raw.trim()
+  if (s === '') return null
+  const n = Number(s)
+  return Number.isFinite(n) ? n : null
+}
+// TASK-044: Reset wipes every style override so the tile falls back to the defaults.
+const STYLE_DEFAULTS: Partial<ChartConfig> = {
+  showLegend: undefined,
+  showGrid: undefined,
+  smooth: undefined,
+  showMarkers: undefined,
+  stacked100: undefined,
+  palette: undefined,
+  yScale: undefined,
+  sortDir: undefined,
+  xTitle: undefined,
+  yTitle: undefined,
+  areaOpacity: undefined,
+  referenceValue: undefined,
+  border: undefined,
+  radius: undefined,
+  shadow: undefined,
+}
+function resetStyle(): void {
+  emit('update:config', { ...props.config, ...STYLE_DEFAULTS })
 }
 
 // Apply a chart type coming from the #30 recommender (or one of its alternative chips).
@@ -756,15 +1038,48 @@ async function recommend(): Promise<void> {
   }
 }
 
-const selectCls =
-  'rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-1 text-xs text-ink-gray-8 focus:border-primary-5 focus:outline-none'
-const labelCls = 'mb-1 block text-[11px] font-medium text-ink-gray-6'
+// The AI output block (Explain / Recommend) lives at the bottom of the chart settings drawer
+// body. When it appears, scroll the drawer so the user sees the narrative/recommendation
+// without hunting for it — this is what makes the "Explain" toggle visibly deliver the
+// definition right under the action button.
+const aiOutputEl = ref<HTMLElement | null>(null)
+watch(
+  () => explainText.value ?? recommendPanel.value,
+  (v) => {
+    if (!v) return
+    // flush:'post' so the v-if AI output block is mounted (and the ref is bound) before we
+    // try to scroll it; otherwise the ref is still null and the scroll is skipped.
+    void nextTick(() => aiOutputEl.value?.scrollIntoView({ behavior: 'smooth', block: 'end' }))
+  },
+  { flush: 'post' },
+)
+
+const sectionCls = 'border-b border-outline-gray-1 last:border-b-0'
+const summaryCls = 'cursor-pointer px-4 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-gray-9 hover:bg-surface-gray-1 transition-colors select-none marker:text-primary-5'
+const sectionBodyCls = 'px-4 pb-4 pt-1 flex flex-col gap-3.5'
+const selectCls = 'w-full rounded-3 border border-outline-gray-2 bg-white px-2.5 py-1.5 text-xs font-medium text-ink-gray-8 shadow-sm transition-all hover:border-primary-4 focus:border-primary-5 focus:outline-none focus:ring-1 focus:ring-primary-5'
+const labelCls = 'mb-1.5 block text-[11px] font-semibold text-ink-gray-5 uppercase tracking-wide'
+const toggleCls = 'flex items-center justify-between gap-1 rounded-3 border border-outline-gray-1 bg-surface-gray-1 px-3 py-2 text-xs font-medium text-ink-gray-7 shadow-sm transition-all hover:bg-white hover:border-outline-gray-2'
+
+function handleSlicerChange(e: Event): void {
+  const val = (e.target as HTMLSelectElement).value
+  if (!val) {
+    if (props.activeKey !== undefined) emit('select', props.activeKey)
+    return
+  }
+  // Map string back to original key type
+  const rawKey = props.data?.keys.find(k => String(k) === val)
+  if (rawKey !== undefined) {
+    emit('select', rawKey)
+  }
+}
 </script>
 
 <template>
   <div
-    class="tile-drag-handle group flex h-full flex-col overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm"
+    :class="[cardClass, selected ? 'ring-2 ring-primary' : '']"
     :style="config.bg ? { backgroundColor: config.bg } : undefined"
+    @click="emit('open-settings')"
   >
     <!-- Header. TASK-036: when a custom card fill is set the header goes transparent so the
          fill reads as one uniform card (Power BI); otherwise it keeps the subtle grey band. -->
@@ -792,13 +1107,14 @@ const labelCls = 'mb-1 block text-[11px] font-medium text-ink-gray-6'
           v-model="titleDraft"
           type="text"
           class="min-w-0 flex-1 rounded-2 border border-outline-gray-2 bg-surface-base px-1.5 py-0.5 text-sm text-ink-gray-8 focus:border-primary-5 focus:outline-none"
+          :class="config.bold ? 'text-base font-bold text-ink-gray-9' : ''"
           :placeholder="autoTitle"
           @keydown.enter="confirmTitle"
           @keydown.esc="cancelTitle"
           @blur="confirmTitle"
         />
         <template v-else>
-          <span class="cursor-move truncate" :class="config.bold ? 'font-bold' : ''" :title="title">{{ title }}</span>
+          <span class="cursor-move truncate" :class="config.bold ? 'text-base font-bold text-ink-gray-9' : 'text-sm font-semibold text-ink-gray-8'" :title="title">{{ title }}</span>
           <button
             type="button"
             class="js-export-exclude shrink-0 rounded-2 p-0.5 text-ink-gray-4 opacity-0 transition-opacity hover:bg-surface-gray-2 hover:text-ink-gray-7 group-hover:opacity-100 focus:opacity-100"
@@ -810,187 +1126,339 @@ const labelCls = 'mb-1 block text-[11px] font-medium text-ink-gray-6'
         </template>
       </h3>
 
-      <div class="js-export-exclude flex flex-wrap items-end justify-end gap-2">
-        <!-- Full picker strip — collapsed by the clean toggle (#5), always hidden in
-             present/export (this whole group is js-export-exclude). -->
-        <template v-if="!config.hideControls">
-          <div>
-            <label :class="labelCls">{{ axisLabels.dim }}</label>
-            <select
-              :class="selectCls"
-              :value="config.dimension ?? ''"
-              @change="onDimensionChange(($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">— none —</option>
-              <option v-for="c in dimOptions" :key="c.name" :value="c.name">{{ c.name }}</option>
-            </select>
-          </div>
-          <div v-if="showBreakdown">
-            <label :class="labelCls">{{ axisLabels.series }}</label>
-            <select
-              :class="selectCls"
-              :value="config.series ?? ''"
-              :disabled="!config.dimension"
-              @change="onSeriesChange(($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">— none —</option>
-              <option v-for="c in seriesOptions" :key="c.name" :value="c.name">{{ c.name }}</option>
-            </select>
-          </div>
-          <div>
-            <label :class="labelCls">{{ axisLabels.measure }}</label>
-            <select
-              :class="selectCls"
-              :value="config.measure ?? ''"
-              @change="onMeasureChange(($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">Count of rows</option>
-              <option v-for="c in columns" :key="c.name" :value="c.name">{{ c.name }}</option>
-            </select>
-          </div>
-          <div v-if="config.measure !== null">
-            <label :class="labelCls">Aggregation</label>
-            <select
-              :class="selectCls"
-              :value="config.aggregation"
-              @change="onAggChange(($event.target as HTMLSelectElement).value)"
-            >
-              <option v-for="a in aggOptions" :key="a" :value="a">{{ AGG_LABEL[a] }}</option>
-            </select>
-          </div>
-          <div>
-            <label :class="labelCls">Type</label>
-            <select
-              :class="selectCls"
-              :value="config.chartType"
-              @change="onTypeChange(($event.target as HTMLSelectElement).value)"
-            >
-              <option v-for="t in CHART_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
-            </select>
-          </div>
-          <!-- TASK-036 #4: per-chart Top-N. Number box + quick presets; the server sorts a
-               categorical series by measure DESC, so this is the TRUE top-N by value. Only
-               meaningful once a dimension (group-by) is chosen. -->
-          <div v-if="config.dimension">
-            <label :class="labelCls">Show top</label>
-            <div class="flex items-center gap-1">
-              <input
-                type="number"
-                min="1"
-                :max="TOPN_MAX"
-                inputmode="numeric"
-                :class="[selectCls, 'w-16']"
-                :value="config.topN ?? ''"
-                :placeholder="String(DEFAULT_TOPN)"
-                :title="`Top categories to show (max ${TOPN_MAX})`"
-                @change="onTopNInput(($event.target as HTMLInputElement).value)"
-              />
-              <button
-                v-for="p in TOPN_PRESETS"
-                :key="p.label"
-                type="button"
-                class="rounded-2 border px-1.5 py-1 text-[11px] transition-colors"
-                :class="config.topN === p.value
-                  ? 'border-primary-3 bg-primary-1 text-primary'
-                  : 'border-outline-gray-2 bg-surface-base text-ink-gray-6 hover:bg-surface-gray-2 hover:text-primary'"
-                :title="p.label === 'All' ? `Show up to ${TOPN_MAX}` : `Show top ${p.value}`"
-                @click="setTopN(p.value)"
-              >
-                {{ p.label }}
+      <Teleport to="#tile-settings-drawer-body">
+      <div v-if="selected" class="js-export-exclude flex flex-col gap-3">
+        <!-- LIVE TITLE PREVIEW: the Bold toggle (and Colour) is now visibly effective right
+             inside the pane, not only on the far-away canvas tile. -->
+        <div class="rounded-2 border border-outline-gray-2 bg-surface-base px-3 py-2">
+          <p class="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-gray-4">Title preview</p>
+          <p class="truncate" :class="config.bold ? 'text-base font-bold text-ink-gray-9' : 'text-sm font-medium text-ink-gray-8'" :title="title">{{ title }}</p>
+        </div>
+        <!-- Full picker strip -->
+        <template v-if="!config.hideControls || selected">
+          <!-- 1. DATA MAPPING -->
+          <details class="group" :class="sectionCls" open>
+            <summary :class="summaryCls">Data & Mapping</summary>
+            <div :class="sectionBodyCls">
+              <div>
+                <label :class="labelCls">Chart Type</label>
+                <select :class="selectCls" :value="config.chartType" @change="onTypeChange(($event.target as HTMLSelectElement).value)">
+                  <option v-for="t in CHART_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
+                </select>
+              </div>
+              <div>
+                <label :class="labelCls">{{ axisLabels.dim }}</label>
+                <select :class="selectCls" :value="config.dimension ?? ''" @change="onDimensionChange(($event.target as HTMLSelectElement).value)">
+                  <option value="">— none —</option>
+                  <option v-for="c in dimOptions" :key="c.name" :value="c.name">{{ c.name }}</option>
+                </select>
+              </div>
+              <div v-if="showBreakdown">
+                <label :class="labelCls">{{ axisLabels.series }}</label>
+                <select :class="selectCls" :value="config.series ?? ''" :disabled="!config.dimension" @change="onSeriesChange(($event.target as HTMLSelectElement).value)">
+                  <option value="">— none —</option>
+                  <option v-for="c in seriesOptions" :key="c.name" :value="c.name">{{ c.name }}</option>
+                </select>
+              </div>
+              <div>
+                <label :class="labelCls">{{ axisLabels.measure }}</label>
+                <select :class="selectCls" :value="config.measure ?? ''" @change="onMeasureChange(($event.target as HTMLSelectElement).value)">
+                  <option value="">Count of rows</option>
+                  <option v-for="c in columns" :key="c.name" :value="c.name">{{ c.name }}</option>
+                </select>
+              </div>
+              <div v-if="showYMeasure">
+                <label :class="labelCls">{{ axisLabels.measureY ?? 'Y axis' }}</label>
+                <select :class="selectCls" :value="config.measureY ?? ''" @change="onMeasureYChange(($event.target as HTMLSelectElement).value)">
+                  <option value="">— numeric column —</option>
+                  <option v-for="c in yMeasureOptions" :key="c.name" :value="c.name">{{ c.name }}</option>
+                </select>
+              </div>
+              <div v-if="config.measure !== null && config.chartType !== 'slicer'">
+                <label :class="labelCls">Aggregation</label>
+                <select :class="selectCls" :value="config.aggregation" @change="onAggChange(($event.target as HTMLSelectElement).value)">
+                  <option v-for="a in aggOptions" :key="a" :value="a">{{ AGG_LABEL[a] }}</option>
+                </select>
+              </div>
+              <div v-if="config.dimension && config.chartType !== 'slicer'">
+                <label :class="labelCls">Show top</label>
+                <div class="flex items-center gap-1">
+                  <input type="number" min="1" :max="TOPN_MAX" inputmode="numeric" :class="[selectCls, 'w-20']" :value="config.topN ?? ''" :placeholder="String(DEFAULT_TOPN)" :title="`Top categories to show (max ${TOPN_MAX})`" @change="onTopNInput(($event.target as HTMLInputElement).value)" />
+                  <button v-for="p in TOPN_PRESETS" :key="p.label" type="button" class="rounded-3 border px-2 py-1.5 text-[11px] font-semibold shadow-sm transition-all" :class="config.topN === p.value ? 'border-primary-5 bg-primary-5 text-white' : 'border-outline-gray-2 bg-white text-ink-gray-7 hover:border-primary-4 hover:text-primary-6'" :title="p.label === 'All' ? `Show up to ${TOPN_MAX}` : `Show top ${p.value}`" @click="setTopN(p.value)">{{ p.label }}</button>
+                </div>
+              </div>
+              <div v-if="config.chartType !== 'slicer'">
+                <label :class="labelCls">Sort Order</label>
+                <select :class="selectCls" :value="config.sortDir ?? 'auto'" @change="patch({ sortDir: (($event.target as HTMLSelectElement).value) as ChartConfig['sortDir'] })">
+                  <option value="auto">Auto</option>
+                  <option value="desc">↓ Highest to Lowest</option>
+                  <option value="asc">↑ Lowest to Highest</option>
+                  <option value="alpha">A—Z Alphabetical</option>
+                </select>
+              </div>
+            </div>
+          </details>
+
+          <!-- 2. AXES & LEGEND -->
+          <details class="group" :class="sectionCls" v-if="config.chartType !== 'slicer' && (isCartesian || canLegend)">
+            <summary :class="summaryCls">Axes & Legend</summary>
+            <div :class="sectionBodyCls">
+              <div v-if="isCartesian" class="grid grid-cols-2 gap-2">
+                <div>
+                  <label :class="labelCls">X Axis Title</label>
+                  <input type="text" :class="selectCls" :value="config.xTitle ?? ''" placeholder="(auto)" @change="patch({ xTitle: (($event.target as HTMLInputElement).value).trim() || null })" />
+                </div>
+                <div>
+                  <label :class="labelCls">Y Axis Title</label>
+                  <input type="text" :class="selectCls" :value="config.yTitle ?? ''" placeholder="(auto)" @change="patch({ yTitle: (($event.target as HTMLInputElement).value).trim() || null })" />
+                </div>
+              </div>
+              <div v-if="isCartesian">
+                <label :class="labelCls">Y Scale</label>
+                <select :class="selectCls" :value="config.yScale ?? 'linear'" @change="patch({ yScale: (($event.target as HTMLSelectElement).value) as 'linear' | 'log' })">
+                  <option value="linear">Linear Scale</option>
+                  <option value="log">Logarithmic Scale</option>
+                </select>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <label v-if="canLegend" :class="toggleCls">
+                  <span>Legend</span>
+                  <input type="checkbox" class="h-4 w-4 rounded-sm border-outline-gray-3 text-primary-5 focus:ring-primary-5 cursor-pointer" :checked="config.showLegend !== false" @change="patch({ showLegend: ($event.target as HTMLInputElement).checked })" />
+                </label>
+                <label v-if="isCartesian" :class="toggleCls">
+                  <span>Gridlines</span>
+                  <input type="checkbox" class="h-4 w-4 rounded-sm border-outline-gray-3 text-primary-5 focus:ring-primary-5 cursor-pointer" :checked="config.showGrid !== false" @change="patch({ showGrid: ($event.target as HTMLInputElement).checked })" />
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-2" v-if="isLine || canStack">
+                <label v-if="isLine" :class="toggleCls">
+                  <span>Smooth Curve</span>
+                  <input type="checkbox" class="h-4 w-4 rounded-sm border-outline-gray-3 text-primary-5 focus:ring-primary-5 cursor-pointer" :checked="config.smooth !== false" @change="patch({ smooth: ($event.target as HTMLInputElement).checked })" />
+                </label>
+                <label v-if="isLine" :class="toggleCls">
+                  <span>Point Markers</span>
+                  <input type="checkbox" class="h-4 w-4 rounded-sm border-outline-gray-3 text-primary-5 focus:ring-primary-5 cursor-pointer" :checked="config.showMarkers !== false" @change="patch({ showMarkers: ($event.target as HTMLInputElement).checked })" />
+                </label>
+                <label v-if="config.series && canStack" :class="toggleCls">
+                  <span>100% Stacked</span>
+                  <input type="checkbox" class="h-4 w-4 rounded-sm border-outline-gray-3 text-primary-5 focus:ring-primary-5 cursor-pointer" :checked="config.stacked100 === true" @change="patch({ stacked100: ($event.target as HTMLInputElement).checked })" />
+                </label>
+              </div>
+            </div>
+          </details>
+
+          <!-- 3. TYPOGRAPHY & COLORS -->
+          <details class="group" :class="sectionCls">
+            <summary :class="summaryCls">Typography & Colors</summary>
+            <div :class="sectionBodyCls">
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label :class="labelCls">Font Family</label>
+                  <select :class="selectCls" :value="config.fontFamily ?? ''" @change="patch({ fontFamily: (($event.target as HTMLSelectElement).value) || null })">
+                    <option value="">Geist (Default)</option>
+                    <option value="'Plus Jakarta Sans', sans-serif">Plus Jakarta Sans</option>
+                    <option value="'Inter', sans-serif">Inter</option>
+                    <option value="'Poppins', sans-serif">Poppins</option>
+                    <option value="'Montserrat', sans-serif">Montserrat</option>
+                    <option value="'Roboto', sans-serif">Roboto</option>
+                    <option value="'Fira Code', monospace">Fira Code</option>
+                    <option value="Arial, sans-serif">Arial</option>
+                    <option value="'Times New Roman', serif">Times New Roman</option>
+                  </select>
+                </div>
+                <div>
+                  <label :class="labelCls">Font Size</label>
+                  <select :class="selectCls" :value="config.valueFontSize ?? ''" @change="patch({ valueFontSize: numOrNull(($event.target as HTMLSelectElement).value) })">
+                    <option value="">Default (11px)</option>
+                    <option value="10">10px</option>
+                    <option value="12">12px</option>
+                    <option value="14">14px</option>
+                    <option value="16">16px</option>
+                    <option value="18">18px</option>
+                    <option value="20">20px</option>
+                    <option value="24">24px</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label :class="labelCls">Color Palette</label>
+                <select :class="selectCls" :value="config.palette ?? ''" @change="patch({ palette: (($event.target as HTMLSelectElement).value) || null })">
+                  <option value="">Spencer Theme (Default)</option>
+                  <option v-for="p in CHART_PALETTES" :key="p.id" :value="p.id">{{ p.label }}</option>
+                </select>
+              </div>
+              <div v-if="isArea || config.chartType === 'heatmap'">
+                <label :class="labelCls">Area Fill Opacity</label>
+                <input type="number" min="0" max="1" step="0.05" :class="selectCls" :value="config.areaOpacity ?? ''" placeholder="0.2 (Default)" @change="patch({ areaOpacity: clampPct(($event.target as HTMLInputElement).value) })" />
+              </div>
+            </div>
+          </details>
+
+          <!-- 4. TILE STYLING -->
+          <details class="group" :class="sectionCls">
+            <summary :class="summaryCls">Card Style</summary>
+            <div :class="sectionBodyCls">
+              <div class="grid grid-cols-2 gap-2">
+                <label :class="toggleCls">
+                  <span>Border</span>
+                  <input type="checkbox" class="h-4 w-4 rounded-sm border-outline-gray-3 text-primary-5 focus:ring-primary-5 cursor-pointer" :checked="config.border !== false" @change="patch({ border: ($event.target as HTMLInputElement).checked })" />
+                </label>
+                <label :class="toggleCls">
+                  <span>Shadow</span>
+                  <input type="checkbox" class="h-4 w-4 rounded-sm border-outline-gray-3 text-primary-5 focus:ring-primary-5 cursor-pointer" :checked="config.shadow === true" @change="patch({ shadow: ($event.target as HTMLInputElement).checked })" />
+                </label>
+              </div>
+              <div>
+                <label :class="labelCls">Corner Radius</label>
+                <select :class="selectCls" :value="config.radius ?? 'md'" @change="patch({ radius: (($event.target as HTMLSelectElement).value) as ChartConfig['radius'] })">
+                  <option value="sm">Small</option>
+                  <option value="md">Medium (Default)</option>
+                  <option value="lg">Large</option>
+                </select>
+              </div>
+              
+              <button type="button" class="mt-2 w-full rounded-3 border border-outline-gray-2 bg-white px-2 py-1.5 text-xs font-semibold text-ink-gray-6 shadow-sm transition-all hover:border-outline-gray-3 hover:bg-surface-gray-1 hover:text-ink-gray-8" @click="resetStyle">
+                Reset Style to Default
               </button>
             </div>
-          </div>
-          <button
-            type="button"
-            class="rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-6 transition-colors hover:bg-surface-gray-2 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!config.dimension || recommending"
-            title="Recommend a chart type for this data"
-            @click="recommend"
-          >
-            <Loader2 v-if="recommending" class="h-4 w-4 animate-spin text-primary" />
-            <Lightbulb v-else class="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            class="rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-6 transition-colors hover:bg-surface-gray-2 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!hasData || explaining"
-            title="Explain this chart in plain English"
-            @click="explainThisChart"
-          >
-            <Loader2 v-if="explaining" class="h-4 w-4 animate-spin text-primary" />
-            <Sparkles v-else class="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            class="rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-6 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-8 disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!hasData"
-            title="Download chart as PNG"
-            @click="exportPng"
-          >
-            <Download class="h-4 w-4" />
-          </button>
+          </details>
         </template>
-
-        <!-- Presentation toolbar (#3/#4/#5 + remove). Always available so a cleaned tile can
+<!-- Presentation toolbar (#3/#4/#5 + remove). Always available so a cleaned tile can
              be recoloured / restored; itself js-export-exclude, so present/export hide it. -->
-        <div class="flex items-center gap-0.5 self-end">
+        <!-- Presentation format toggles: compact segmented bar, active state in brand colour.
+             Always available so a cleaned tile can be recoloured / restored. -->
+        <div class="flex items-center gap-1">
           <button
             type="button"
-            class="rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 transition-colors hover:bg-surface-gray-2"
+            class="flex-1 rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-6 transition-colors hover:bg-surface-gray-2"
             :class="config.color || config.bg ? 'text-primary' : 'text-ink-gray-6 hover:text-primary'"
             title="Colour &amp; card background"
             @click="toggleColor"
           >
-            <Palette class="h-4 w-4" />
+            <Palette class="mx-auto h-4 w-4" />
           </button>
           <button
             type="button"
-            class="rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 transition-colors hover:bg-surface-gray-2"
+            class="flex-1 rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-6 transition-colors hover:bg-surface-gray-2"
             :class="config.bold ? 'text-primary' : 'text-ink-gray-6 hover:text-primary'"
             :title="config.bold ? 'Unbold title' : 'Bold title'"
             @click="toggleBold"
           >
-            <Bold class="h-4 w-4" />
+            <Bold class="mx-auto h-4 w-4" />
           </button>
           <button
             type="button"
-            class="rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 transition-colors hover:bg-surface-gray-2"
+            class="flex-1 rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-6 transition-colors hover:bg-surface-gray-2"
             :class="config.showValues ? 'text-primary' : 'text-ink-gray-6 hover:text-primary'"
             :title="config.showValues ? 'Hide values on chart' : 'Show values on chart'"
             @click="toggleValues"
           >
-            <Hash class="h-4 w-4" />
+            <ListOrdered class="mx-auto h-4 w-4" />
           </button>
           <button
             type="button"
-            class="rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 transition-colors hover:bg-surface-gray-2"
+            class="flex-1 rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-6 transition-colors hover:bg-surface-gray-2"
             :class="config.hideControls ? 'text-primary' : 'text-ink-gray-6 hover:text-primary'"
             :title="config.hideControls ? 'Show controls' : 'Hide controls (keep title + chart)'"
             @click="toggleClean"
           >
-            <SlidersHorizontal class="h-4 w-4" />
+            <SlidersHorizontal class="mx-auto h-4 w-4" />
+          </button>
+        </div>
+        <div class="flex items-center gap-1">
+          <button
+            type="button"
+            class="flex-1 rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-4 transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-7"
+            title="Duplicate chart"
+            @click="emit('duplicate')"
+          >
+            <Copy class="mx-auto h-4 w-4" />
           </button>
           <button
             type="button"
-            class="rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-4 transition-colors hover:bg-surface-gray-2 hover:text-ink-red"
+            class="flex-1 rounded-2 border border-outline-gray-2 bg-surface-base p-1.5 text-ink-gray-4 transition-colors hover:bg-surface-gray-2 hover:text-ink-red"
             title="Remove chart"
             @click="emit('remove')"
           >
-            <X class="h-4 w-4" />
+            <X class="mx-auto h-4 w-4" />
           </button>
         </div>
+
+        <!-- AI OUTPUT (Explain / Recommend) — rendered right under the Actions, as requested,
+             and always visible (not gated by the clean/controls toggle). -->
+        <div
+          ref="aiOutputEl"
+          v-if="recommendPanel || recommendError || explainText || explainError"
+          class="space-y-2 rounded-2 border border-outline-gray-2 bg-primary-1/50 px-2.5 py-2 text-sm"
+        >
+          <div v-if="recommendPanel" class="flex items-start gap-2">
+            <Lightbulb class="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <div class="min-w-0 flex-1">
+              <p class="text-ink-gray-8">
+                <span class="font-semibold text-primary">{{ typeLabel(recommendPanel.chartType) }}</span>
+                — {{ recommendPanel.reasoning }}
+              </p>
+              <div v-if="recommendPanel.alternatives.length" class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span class="text-[11px] text-ink-gray-5">Try instead:</span>
+                <button
+                  v-for="alt in recommendPanel.alternatives"
+                  :key="alt"
+                  type="button"
+                  class="rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-0.5 text-[11px] font-medium text-ink-gray-7 transition-colors hover:border-primary-3 hover:text-primary"
+                  @click="applyType(alt)"
+                >
+                  {{ typeLabel(alt) }}
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="rounded-2 p-0.5 text-ink-gray-4 transition-colors hover:bg-surface-base hover:text-ink-gray-7"
+              title="Dismiss"
+              @click="recommendPanel = null"
+            >
+              <X class="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div v-if="recommendError" class="flex items-start gap-2 text-ink-red">
+            <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+            <span class="min-w-0 flex-1 break-words">{{ recommendError }}</span>
+          </div>
+          <div v-if="explainText" class="flex items-start gap-2">
+            <Sparkles class="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <p class="min-w-0 flex-1 whitespace-pre-wrap break-words leading-relaxed text-ink-gray-8">
+              {{ explainText }}
+            </p>
+            <button
+              type="button"
+              class="rounded-2 p-0.5 text-ink-gray-4 transition-colors hover:bg-surface-base hover:text-ink-gray-7"
+              title="Dismiss"
+              @click="explainText = null"
+            >
+              <X class="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div v-if="explainError" class="flex items-start gap-2 text-ink-red">
+            <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+            <span class="min-w-0 flex-1 break-words">{{ explainError }}</span>
+          </div>
+        </div>
       </div>
+  </Teleport>
     </div>
 
     <!-- TASK-033/036 colour popover (ResultsTable menuOpen + fixed-backdrop idiom). Two
          targets — series colour + card background — each with presets, a native any-colour
          picker, a hex field, and a reset. `.no-drag` keeps the floating panel from starting a
-         tile drag. Picking does NOT close the panel, so both sections stay usable. -->
+         tile drag. Picking does NOT close the panel, so both sections stay usable.
+         Teleported into the drawer body so it sits ABOVE the drawer (otherwise it paints behind
+         the z-50 <aside> and becomes unclickable). -->
+    <Teleport to="#tile-settings-drawer-body">
     <template v-if="colorOpen">
       <div class="js-export-exclude no-drag fixed inset-0 z-40" @click="colorOpen = false"></div>
       <div
-        class="js-export-exclude no-drag fixed z-50 max-h-[70vh] w-56 overflow-auto rounded-3 border border-outline-gray-2 bg-surface-base p-2.5 shadow-lg"
-        :style="{ top: `${colorPos.y + 4}px`, left: `${colorPos.x}px`, transform: 'translateX(-100%)' }"
+        class="js-export-exclude no-drag fixed z-50 w-56 overflow-auto rounded-3 border border-outline-gray-2 bg-surface-base p-2.5 shadow-lg"
+        :style="{ top: `${colorPos.y}px`, left: `${colorPos.x}px`, maxHeight: `${colorMaxH}px`, transform: 'translateX(-100%)' }"
       >
         <!-- Series colour -->
         <p class="mb-1.5 px-0.5 text-[11px] font-medium text-ink-gray-6">
@@ -1082,75 +1550,34 @@ const labelCls = 'mb-1 block text-[11px] font-medium text-ink-gray-6'
         </div>
       </div>
     </template>
+    </Teleport>
 
-    <!-- #18 / #30 AI panels: type recommendation + chart narrative. On-demand and
-         dismissible; independent of the plot state below. -->
-    <div
-      v-if="recommendPanel || recommendError || explainText || explainError"
-      class="space-y-2 border-b border-outline-gray-1 bg-primary-1/50 px-4 py-2.5 text-sm"
-    >
-      <!-- #30 recommendation (already applied to the Type above) + alternatives -->
-      <div v-if="recommendPanel" class="flex items-start gap-2">
-        <Lightbulb class="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-        <div class="min-w-0 flex-1">
-          <p class="text-ink-gray-8">
-            <span class="font-semibold text-primary">{{ typeLabel(recommendPanel.chartType) }}</span>
-            — {{ recommendPanel.reasoning }}
-          </p>
-          <div v-if="recommendPanel.alternatives.length" class="mt-1.5 flex flex-wrap items-center gap-1.5">
-            <span class="text-[11px] text-ink-gray-5">Try instead:</span>
-            <button
-              v-for="alt in recommendPanel.alternatives"
-              :key="alt"
-              type="button"
-              class="rounded-2 border border-outline-gray-2 bg-surface-base px-2 py-0.5 text-[11px] font-medium text-ink-gray-7 transition-colors hover:border-primary-3 hover:text-primary"
-              @click="applyType(alt)"
-            >
-              {{ typeLabel(alt) }}
-            </button>
-          </div>
-        </div>
-        <button
-          type="button"
-          class="rounded-2 p-0.5 text-ink-gray-4 transition-colors hover:bg-surface-base hover:text-ink-gray-7"
-          title="Dismiss"
-          @click="recommendPanel = null"
-        >
-          <X class="h-3.5 w-3.5" />
-        </button>
-      </div>
-      <div v-if="recommendError" class="flex items-start gap-2 text-ink-red">
-        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
-        <span class="min-w-0 flex-1 break-words">{{ recommendError }}</span>
-      </div>
-
-      <!-- #18 narrative of the current series -->
-      <div v-if="explainText" class="flex items-start gap-2">
-        <Sparkles class="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-        <p class="min-w-0 flex-1 whitespace-pre-wrap break-words leading-relaxed text-ink-gray-8">
-          {{ explainText }}
-        </p>
-        <button
-          type="button"
-          class="rounded-2 p-0.5 text-ink-gray-4 transition-colors hover:bg-surface-base hover:text-ink-gray-7"
-          title="Dismiss"
-          @click="explainText = null"
-        >
-          <X class="h-3.5 w-3.5" />
-        </button>
-      </div>
-      <div v-if="explainError" class="flex items-start gap-2 text-ink-red">
-        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
-        <span class="min-w-0 flex-1 break-words">{{ explainError }}</span>
-      </div>
-    </div>
+    <!-- AI output (Explain / Recommend) is now rendered inside the chart settings drawer body,
+         directly under the Actions, so it is always visible where the user expects it. -->
 
     <!-- Plot. The canvas host is always mounted so ECharts has a stable element to
          init into; transient states are overlaid rather than replacing it. `flex-1 min-h-0`
          lets the plot fill the tile's remaining height (TASK-034 resizable tiles) — the
-         useEchart ResizeObserver re-renders ECharts when this box changes. -->
-    <div class="relative min-h-0 flex-1 p-2">
-      <div ref="chartEl" class="h-full w-full"></div>
+         useEchart ResizeObserver re-renders ECharts when this box changes. `.no-drag` keeps
+         grid drag from starting on the canvas. A plain click anywhere on the tile (including
+         the plot) bubbles to the root and opens the settings drawer; ECharts' own listener
+         still fires the cross-filter independently, so both behaviours coexist. -->
+    <div class="no-drag relative min-h-0 flex-1 p-2">
+        <div v-if="config.chartType === 'slicer'" class="flex h-full w-full flex-col justify-center px-4">
+          <label class="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-ink-gray-5 text-center">Filter {{ config.dimension || 'Column' }}</label>
+          <select
+            class="w-full cursor-pointer rounded-3 border border-outline-gray-2 bg-surface-base px-3 py-2 text-sm font-medium text-ink-gray-8 shadow-sm transition-colors hover:border-primary-4 focus:border-primary-5 focus:outline-none focus:ring-1 focus:ring-primary-5"
+            :value="activeKey === undefined ? '' : String(activeKey)"
+            @change="handleSlicerChange"
+            @click.stop
+          >
+            <option value="">All</option>
+            <option v-for="key in (data?.keys || [])" :key="String(key)" :value="String(key)">
+              {{ String(key) }}
+            </option>
+          </select>
+        </div>
+        <div v-else ref="chartEl" class="h-full w-full"></div>
 
       <div
         v-if="loading || error || !hasData || plotHint"

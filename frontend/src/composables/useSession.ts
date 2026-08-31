@@ -8,6 +8,8 @@ import type { ColumnMeta, TransformOp, HistoryStep, SchemaTable } from '../types
 import {
   createSession,
   uploadTable,
+  deleteTable,
+  setPrimaryTable,
   materializeQuery,
   applyTransform,
   undoTransform,
@@ -424,10 +426,55 @@ async function materializeResult(sql: string, name?: string | null): Promise<str
 }
 
 export function useSession() {
+  async function removeTable(name: string): Promise<boolean> {
+    const uuid = state.sessionUuid
+    if (!uuid) return false
+    try {
+      await deleteTable(uuid, name)
+      state.tables = state.tables.filter((t) => t.table_name !== name)
+      // If we dropped the active table, fallback to the primary or the first available
+      if (state.tableName === name) {
+        if (state.tables.length > 0) {
+          const fallback = state.tables.find((t) => t.is_primary) || state.tables[0]
+          setActiveTable(fallback.table_name)
+        } else {
+          // No tables left
+          state.tableName = null
+          state.columns = []
+          state.rowCount = 0
+          state.historySteps = []
+          state.canUndo = false
+          state.canRedo = false
+        }
+      }
+      return true
+    } catch (e) {
+      console.error('Failed to remove table:', e)
+      return false
+    }
+  }
+
+  async function makePrimary(name: string): Promise<boolean> {
+    const uuid = state.sessionUuid
+    if (!uuid) return false
+    try {
+      await setPrimaryTable(uuid, name)
+      state.tables.forEach(t => {
+        t.is_primary = (t.table_name === name)
+      })
+      return true
+    } catch (e) {
+      console.error('Failed to set primary table:', e)
+      return false
+    }
+  }
+
   return {
     ...toRefs(state),
     upload,
     addTable,
+    removeTable,
+    makePrimary,
     materializeResult,
     setActiveTable,
     applyOp,

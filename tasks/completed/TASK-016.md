@@ -249,4 +249,4 @@ already-reviewed `OpDialog`. The notes below are deliberate design choices and h
   manual-toggle memory.
 
 ## Status
-IMPLEMENTATION COMPLETE — self-reviewed (no Critical/High/Medium). **Awaiting user sign-off; not self-closed.**
+IMPLEMENTATION COMPLETE — self-reviewed (no Critical/High/Medium). **SIGNED OFF by user on 2026-08-29.**

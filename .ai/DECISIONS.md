@@ -106,3 +106,17 @@
 **Files:** `services/transform_service.py` (new op branches, allowlist + `_func_name`, `_build_filter_sql`, `_compile_op`, `preview_transform`), `models/schemas.py` (new discriminated members + `TransformPreviewResponse`), `routers/session.py` (preview endpoint). `duckdb_manager.py` untouched; the AI-SQL path untouched.
 **Verification:** `backend/test_transform_v2.py` — every new op applied to a real table with its compiled DuckDB SQL and real effect; `filter_rows` malicious-predicate rejection with the sentinel surviving; the function allowlist rejecting `nextval`/`read_csv_auto`/`pg_sleep` in both formula and predicate while whitelisted `abs`/`length`/`round` pass; dry-run delta correct with table/history/version unchanged; undo/redo across the new ops. Runs against **real Redis** (prints `redis` 5.0.14.1) and is idempotent (AP-7); TASK-004's proof still green (no regression).
 **Status:** Implemented and verified; **awaiting user sign-off** (self-review is not sign-off — ADR-009 process).
+
+---
+
+### Addendum (2026-08-29) — auth, scheduling, dashboards, Wave 5 charting
+
+Since the ADRs above were written, several waves landed that change the operating assumptions:
+
+- **Auth & multi-tenancy (TASK-027):** Spencer is now a registered-user product, not single-user. JWT access+refresh at `/auth/*`; all data endpoints require a bearer token. Tenant isolation is data-layer enforced via user-id-namespaced session tables + ownership checks in the routers (`test_tenant_isolation.py` proves cross-user rejection). A SUPERUSER is env-bootstrapped for ops. **Implication for prior ADRs:** ADR-001/007/010/012/014 still hold within a single session's scope; the new constraint is that "the session" is now owned, so ownership must be re-checked on every request — the AI sandbox (ADR-010) and Ibis-compiled Spencer queries (ADR-014) are unaffected, but the *routing* layer gained an authorization step.
+- **Scheduling (TASK-028):** APScheduler with a persistent Redis job store is implemented (`routers/schedule.py`); the earlier "sweep is independent of the (unbuilt) job store" note in ARCHITECTURE.md is now stale — the job store exists.
+- **Named dashboards (TASK-035):** Canvas dashboards are save/load-able per user (useDashboards composable), extending TASK-034's drag/resize grid.
+- **Wave 5 chart types (TASK-042):** the single `POST /sessions/{id}/aggregate` endpoint was extended *additively* (no new route, fully back-compatible) with `measure_y`+`top_points` (raw scatter points) and `box` (per-category five-number stats). Rendered chart types: bar, line, area, hbar, pie, stacked, heatmap, treemap, funnel, scatter, box, gauge.
+
+**Open architectural decisions (not yet made — each needs an ARCHITECTURAL_CHANGE_REQUEST before work):**
+S-3 per-user LLM quota; S-4 API rate limiting; D-1 Redis→`app_db` catalog mirror with bounded staleness; D-2 ownership-aware sweep (operate across all users, not just the caller); I-1 Alembic migrations; I-2 backup/restore; P-1 billing; P-2 password reset; P-3 observability/alerting; P-4 hide the Register tab in single-user mode. None of these are started; they are intentionally deferred pending product/security decisions.

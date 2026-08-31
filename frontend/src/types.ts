@@ -338,6 +338,14 @@ export interface AggregateRequest {
   aggregation: Aggregation
   limit?: number
   filters?: AggregateFilter[]
+  // Wave 5 scatter: when set, the backend returns raw (x, y) points instead of a grouped
+  // aggregate. `measure` is the X axis, `measure_y` the Y axis; optional `dimension` colours
+  // the points. `aggregation` is ignored in scatter mode.
+  measure_y?: string | null
+  top_points?: number
+  // Wave 5 box plot: when true, group `measure` by `dimension` and return per-category
+  // [min, Q1, median, Q3, max] stats. `dimension` (category) must be set. Optional ⇒ back-compat.
+  box?: boolean
 }
 
 // POST /sessions/{id}/aggregate response. For a KPI, `keys` is empty and the number
@@ -355,13 +363,17 @@ export interface AggregateResponse {
   matrix?: AggregateValue[][]
   compiled_sql: string
   truncated: boolean
+  // Scatter mode (Wave 5): raw points when the request set `measure_y`; null otherwise.
+  points?: Array<{ x: AggregateValue; y: AggregateValue; group?: AggregateKey }> | null
+  // Box-plot mode (Wave 5): per-category stats when the request set `box`; null otherwise.
+  boxes?: Array<{ key: AggregateKey; min: AggregateValue; q1: AggregateValue; median: AggregateValue; q3: AggregateValue; max: AggregateValue; n?: number }> | null
 }
 
 // --- Canvas tile configuration (frontend-only view state) ---
 // Not a wire contract, so these use camelCase: `chartType` never leaves the browser
 // (the backend aggregates; it does not care how the result is drawn).
 
-export type ChartType = 'bar' | 'line' | 'area' | 'hbar' | 'pie' | 'stacked' | 'heatmap' | 'treemap' | 'funnel'
+export type ChartType = 'bar' | 'line' | 'area' | 'hbar' | 'pie' | 'stacked' | 'heatmap' | 'treemap' | 'funnel' | 'scatter' | 'box' | 'gauge' | 'slicer'
 
 /** Chart types that read the optional `series` breakdown (2-D dimension × series).
  *  The others ignore it — ChartCanvas drops `series` from the request for them, and the
@@ -369,6 +381,12 @@ export type ChartType = 'bar' | 'line' | 'area' | 'hbar' | 'pie' | 'stacked' | '
 const BREAKDOWN_CHART_TYPES: ReadonlySet<ChartType> = new Set(['bar', 'line', 'area', 'stacked', 'heatmap'])
 export function supportsBreakdown(t: ChartType): boolean {
   return BREAKDOWN_CHART_TYPES.has(t)
+}
+
+/** Scatter uses two measures (X = `measure`, Y = `measureY`) and an optional colour
+ *  column (`dimension`). It is NOT a breakdown type. */
+export function supportsMeasureY(t: ChartType): boolean {
+  return t === 'scatter'
 }
 
 export interface KpiConfig {
@@ -392,6 +410,21 @@ export interface KpiConfig {
   // TASK-036 (Power BI Canvas, part 4): more per-tile presentation, all optional/back-compat.
   bg?: string | null // card background fill (hex/oklch); null/absent ⇒ default surface
   bold?: boolean // bold the title AND the big value
+  // Power BI–style drawer options (all optional / back-compatible).
+  decimals?: number | null // per-KPI decimal places (null ⇒ global setting)
+  thousands?: boolean | null // per-KPI thousands separator (null ⇒ global setting)
+  currency?: boolean | null // per-KPI currency formatting (null ⇒ global setting)
+  prefix?: string | null // text before the value, e.g. "$"
+  suffix?: string | null // text after the value, e.g. "%", " kg"
+  colorByTarget?: boolean // colour the value by target direction (default false)
+  showSpark?: boolean // show the sparkline (default true)
+  sparkType?: 'line' | 'area' | 'bar' // sparkline style (default 'line')
+  align?: 'left' | 'center' // value alignment (default 'left')
+  border?: boolean // card border (default true)
+  radius?: 'sm' | 'md' | 'lg' // card corner radius (default 'md')
+  shadow?: boolean // card drop shadow (default false)
+  fontFamily?: string | null // custom font family
+  valueFontSize?: number | null // custom font size for values
 }
 
 /** Whether meeting-or-beating the target is good (revenue) or bad (cost/error rate). */
@@ -404,6 +437,9 @@ export interface ChartConfig {
   series: string | null
   measure: string | null
   aggregation: Aggregation
+  // Wave 5 scatter: optional Y measure. Only used when chartType === 'scatter'; ignored
+  // (and never sent to the backend) for every other type. Optional ⇒ back-compatible.
+  measureY?: string | null
   chartType: ChartType
   // TASK-033 (Power BI Canvas): per-tile presentation overrides, all frontend-only and
   // all optional ⇒ existing tiles / saved dashboards render exactly as before.
@@ -415,6 +451,24 @@ export interface ChartConfig {
   bg?: string | null // card background fill (hex/oklch); null/absent ⇒ default surface
   bold?: boolean // bold the title
   topN?: number | null // cap grouped categories to the top-N by measure; null/absent ⇒ server default (top-50, value DESC)
+  // Power BI–style drawer options (all optional / back-compatible).
+  showLegend?: boolean // show the series legend on breakdown charts (default true)
+  xTitle?: string | null // custom category/x-axis title (overrides the field name)
+  yTitle?: string | null // custom value/y-axis title
+  showGrid?: boolean // draw gridlines (default true)
+  palette?: string | null // categorical palette id (see utils/chartPalette); null ⇒ default
+  stacked100?: boolean // 100% stacked for bar/area/stacked
+  referenceValue?: number | null // horizontal reference line on the value axis; null ⇒ none
+  yScale?: 'linear' | 'log' // value-axis scale (default 'linear')
+  smooth?: boolean // smooth line/area curves (default true)
+  showMarkers?: boolean // point markers on line/area (default true)
+  areaOpacity?: number | null // area fill opacity 0..1 (default 0.2)
+  sortDir?: 'auto' | 'desc' | 'asc' | 'alpha' // category sort order (default 'auto' = top-N desc)
+  border?: boolean // card border (default true)
+  radius?: 'sm' | 'md' | 'lg' // card corner radius (default 'md')
+  shadow?: boolean // card drop shadow (default false)
+  fontFamily?: string | null // custom font family
+  valueFontSize?: number | null // custom font size for values
 }
 
 /** Per-tile fetch state, owned by ChartCanvas and passed down to the tiles. */

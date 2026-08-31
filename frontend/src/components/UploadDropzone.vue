@@ -87,7 +87,7 @@ function submitPaste() {
       <button
         v-if="!uploading"
         type="button"
-        class="inline-flex shrink-0 items-center gap-1.5 rounded-3 border border-outline-gray-2 bg-surface-base px-3 py-1.5 text-xs font-medium text-ink-gray-7 shadow-sm transition-colors hover:bg-surface-gray-2 hover:text-ink-gray-9"
+        class="btn btn-ghost shrink-0"
         @click="browse"
       >
         <RefreshCw class="h-3.5 w-3.5" /> Replace
