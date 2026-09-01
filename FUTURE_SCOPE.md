@@ -1,511 +1,636 @@
-# Spencer — Future Scope
+# Spencer BI Engine — Future Scope & Hardening Roadmap
 
-> **A living roadmap draft.** This is the forward-looking companion to the two working
-> registers in [`tasks/`](tasks/): [`BACKLOG.md`](tasks/BACKLOG.md) (features) and
-> [`SAAS_READINESS.md`](tasks/SAAS_READINESS.md) (hardening). Both of those were last
-> *status-verified* on 2026-08-22 / 2026-08-25 respectively and their status columns have
-> since been overtaken by delivery. This document reconciles them against what has actually
-> shipped as of **2026-08-26**, then lays out — in detail — everything still ahead: the
-> remaining product features, the path from "deployable" to "sellable," and the larger v2
-> bets beyond the current 34-feature list.
->
-> Drafted for discussion. Nothing here is a commitment or a sign-off; sequencing is a
-> proposal with a clear recommendation, and the final call is yours.
+> **Goal:** Transform Spencer from a powerful local-first BI prototype into a
+> break-proof, production-grade, enterprise-ready analytics platform.
 
 ---
 
-## 0. How to read this document
+## Table of Contents
 
-- **Part I — Finish the product.** The features still open on the 34-item backlog.
-- **Part II — The road to "sellable."** The SaaS-readiness hardening, by risk tier.
-- **Part III — Beyond the backlog.** The v2 / competitive bets that aren't on the 34-item
-  list yet but define where Spencer goes after it's "complete + safe."
-- **Part IV — Architecture evolution & cross-cutting work.** The scaling ceiling, testing,
-  observability, and developer experience.
-- **Part V — Recommended sequencing & open decisions.**
-- **Appendix — Status reconciliation** (feature-by-feature, with a confidence flag on each,
-  since the source docs are stale).
-
-**Legend** (matches the working docs): ✅ built · 🟡 partial · ⬜ not built · ⏳ awaiting
-sign-off · 🔴🟠🟡🟢 severity · ⚠ *my status read needs a fresh code re-verification before
-it's trusted* (the source docs predate several shipped waves).
+1. [Current State Assessment](#1-current-state-assessment)
+2. [Phase 1 — Break-Proof Stability (Week 1–2)](#2-phase-1--break-proof-stability-week-12)
+3. [Phase 2 — Production Hardening (Week 3–4)](#3-phase-2--production-hardening-week-34)
+4. [Phase 3 — Feature Parity with Power BI (Month 2–3)](#4-phase-3--feature-parity-with-power-bi-month-23)
+5. [Phase 4 — Enterprise & Scale (Month 4–6)](#5-phase-4--enterprise--scale-month-46)
+6. [Phase 5 — SaaS & Monetization (Month 6+)](#6-phase-5--saas--monetization-month-6)
+7. [Architecture Evolution Map](#7-architecture-evolution-map)
+8. [Risk Register](#8-risk-register)
+9. [Priority Matrix](#9-priority-matrix)
 
 ---
 
-## 1. Where Spencer is today (baseline, reconciled)
+## 1. Current State Assessment
 
-Spencer is a three-pillar, single-page analytics workbench: **upload a messy dataset →
-clean it → visualise it → query it in SQL/English**, multi-tenant, and packaged to deploy.
+### What Spencer Does Well Today
+- **Columnar Speed:** DuckDB in-process engine handles ~10M row datasets with sub-second aggregation
+- **AI Query Engine:** NL-to-SQL with 3-attempt self-correction, conversation history, and a strict Review Gate (never auto-executes)
+- **Data Preparation:** 16 visual transforms with live dry-run previews, 10-step undo/redo via DuckDB snapshot tables
+- **Canvas Dashboard:** 13 chart types on a drag-and-drop 12-column grid with cross-filtering, multi-page support, and PDF/PNG export
+- **Security Depth:** Triple-layer SQL defense (AST validation → transaction rollback sandbox → tenant scope gate), formula function allowlist, bound file parameters
+- **Multi-Key LLM Pool:** Automatic key rotation across 7 Gemini API keys with per-minute burst and per-day quota tracking
 
-The product is organised as three workspaces, matching the product vision:
+### What Breaks or Hurts Today
 
-- **Table** — the data-prep surface. Auto-shows the full table after upload; column profiler,
-  a whole-table data-quality scanner with one-click fixes, an Ibis-compiled transform engine
-  (cast / normalize / split / bin / date-parts / fill-down / impute / dedupe / filter /
-  in-cell edit / **make-positive**), undo/redo with server snapshots, and a multi-table
-  switcher.
-- **Canvas** — a Power BI-style dashboard: a movable/resizable tile grid across multiple
-  pages, KPI cards with delta-vs-target + sparklines, ~9 chart types on a 2-D aggregate
-  contract, cross-filtering, per-tile presentation controls, named save/load slots,
-  live auto-persist, and PNG/PDF export + a present/fullscreen mode.
-- **Query Engine** — a MySQL-Workbench-style SQL editor (schema-aware autocomplete, clickable
-  column pills, query history) fused with an AI layer (natural-language → SQL, a
-  self-correction loop, and a fail-closed sandboxed `/execute`), plus the ability to send a
-  result to a new working table or to a Canvas tile.
-
-Underneath: FastAPI + on-disk DuckDB (via a single connection) + Redis for session/schema
-state, an **Ibis-as-compiler** transform path (ADR-012), JWT auth with real per-tenant
-isolation (ADR-027-era work), and a Docker/Caddy same-origin deployment package.
-
-### 1.1 What has actually shipped (reconciling the stale tallies)
-
-The [`BACKLOG.md`](tasks/BACKLOG.md) tally reads *"7 built · 10 partial · 17 not built"* —
-but that snapshot is from **2026-08-22**. Since then the task queue has been cleared through
-**TASK-039**, delivering essentially all of Waves 1–6 and two of Wave 7's five connectors.
-The real picture:
-
-| Wave | Scope | Status (2026-08-26) |
-|------|-------|---------------------|
-| **1 — Table toolkit** | split/extract, binning, date-parts/reformat, regex/pad/strip, fill-down/outlier (#3–#7) | ✅ shipped (TASK-018, TASK-019) |
-| **2 — Round-trip data** | upload formats + Parquet fix, export cleaned, export results (#31, #10, #24) | ✅ shipped ⚠ *(re-verify #24 multi-tab / clipboard)* |
-| **3 — In-grid power** | multi-sort, reorder, pin, hide, search, inline edit (#8) | ✅ shipped (TASK-022) + extended by TASK-041 (in-cell edit) |
-| **4 — AI batch** | explain/optimize SQL, chart rec, auto-EDA, storytelling, explain-chart, conversational (#22, #30, #26, #29, #18, #21) | ✅ shipped as a batch (TASK-023) ⚠ *per-feature completeness needs a fresh audit* |
-| **5 — Canvas chart types** | 2-D aggregate contract + new chart types (#11) | ✅ shipped (TASK-025) |
-| **6 — Dashboard persistence + polish** | drag/resize grid, save/load, KPI deltas/sparklines, export/present (#15, #14, #17) | ✅ shipped (TASK-030–037) — **except** #16 templates and #13 date-range picker (still 🟡) |
-| **7 — Cross-pillar connectors** | switcher, result→table/tile, params, snapshot, session I/O (#32, #23, #25, #34, #33) | 🟡 **2 of 5**: #32 signed off (TASK-039); #23 built (TASK-040, awaiting sign-off). #25/#34/#33 open. |
-
-**Bottom line:** the 34-feature list is *far* more complete than either working doc reflects.
-The genuinely-remaining product work is small and specific (§2), and the larger lift now is
-**readiness**, not features.
-
-### 1.2 Open loops right now
-
-- **Three tasks await your `mv` sign-off** (built + verified, left in `tasks/active/`, not
-  self-closed): **TASK-040** (#23 materialize result→table/Canvas), **TASK-041** (10-item
-  data-grid/quality/chart batch), **TASK-042** (3-item data-prep batch).
-- **Uncommitted working tree.** Commit tip `2a63d7f` is **ahead of `origin/master` by 1
-  (not pushed)**; the working tree additionally carries all of TASK-040/041/042's code plus
-  the TASK-038/039 sign-off renames. A push has not been requested.
-- **The two working docs are stale.** Their status columns predate Waves 1–6; a
-  reconciliation pass (§2.5) is itself a recommended near-term action.
-
-### 1.3 Readiness verdict (from the audit)
-
-> *"Deployable, not yet sellable."* Fine today for a **closed/invite pilot with disposable
-> data**; roughly one hardening wave from public sale.
-
-That audit named two Tier-0 criticals (**S-1** cross-tenant `/execute` read, **S-2**
-Redis-restart data loss). **Both were fixed in TASK-029 and shipped in commit `2a63d7f`
-("harden /execute + Redis (S-1/S-2)").** [`SAAS_READINESS.md`](tasks/SAAS_READINESS.md) still
-shows them as `⏳ TASK-029` — that status is stale; the code is in. What remains is the
-residual **D-2** (ownership-aware sweep) plus all of Tiers 1–3 (§3).
+| Area | Problem | Severity |
+|------|---------|----------|
+| **LLM Availability** | All 7 keys exhaust daily quota → 429 errors for the rest of the day | 🔴 Critical |
+| **DuckDB Single-Writer** | One `spencer.db` file, one process — cannot scale to multiple workers | 🔴 Critical |
+| **No Redis Persistence** | Server restart loses all session metadata, schema caches, LLM cooldown state | 🟠 High |
+| **No Password Reset** | "Forgot password?" is a dead placeholder | 🟠 High |
+| **No Email Verification** | Anyone can register with any email string | 🟠 High |
+| **No Rate Limiting on Auth** | `/auth/login` and `/auth/register` have zero brute-force protection | 🟠 High |
+| **Dashboards in localStorage** | Clearing browser data destroys all saved dashboards permanently | 🟠 High |
+| **No Async Query Worker** | Large queries block the single Uvicorn thread pool | 🟡 Medium |
+| **No Alembic Migrations** | Schema changes require manual DDL — risky on production deploys | 🟡 Medium |
+| **No Automated Tests** | Zero test coverage in CI — regressions are caught manually | 🟡 Medium |
+| **Dual Theme Color Controls** | `TableSwitcher` and `DashboardSettings` both set accent colors independently | 🟢 Low |
+| **Orphan Table Cleanup** | Dev/test DuckDB tables created without `uploads/` dirs escape the sweeper | 🟢 Low |
 
 ---
 
-## 2. Part I — Finish the product (remaining features)
+## 2. Phase 1 — Break-Proof Stability (Week 1–2)
 
-Five discrete pieces of feature work remain on the 34-item list. All ride on foundations that
-are **already built** (§4.1), so each is small.
+> **Objective:** Eliminate every crash path, silent failure, and data loss vector.
 
-### 2.1 #25 — Parameterized queries *(Query Engine)*  ⬜
+### 2.1 LLM Resilience & Fallback Chain
 
-**What:** let a saved/typed query carry run-time variables — `:param` or `{{var}}` — that the
-user fills in before running, instead of editing raw SQL each time. Today SQL is sent verbatim.
+**Problem:** When all Gemini keys are rate-limited, the entire AI layer goes dark.
 
-**Why it matters:** turns one-off queries into reusable, shareable reports ("sales for
-`{{region}}` in `{{month}}`"), and is a prerequisite for a clean shareable-snapshot story (#34)
-and for any "report template" concept later.
+**Solution — Multi-Provider Fallback Chain:**
+```
+Primary:   gemini/gemini-3.6-flash  (7 pooled keys)
+Fallback:  gemini/gemini-2.5-flash  (if available on account)
+Emergency: anthropic/claude-haiku   (cheap, fast, always-on)
+Local:     ollama/llama3.2          (zero-cost offline fallback)
+```
 
-**Approach (small, security-first):**
-- Parse `:name` / `{{name}}` placeholders client-side, render an input per variable, and
-  substitute **as bound values, never string-concatenated SQL**.
-- The substitution must run through the **same fail-closed validator** that `/execute` uses
-  (`sql_validator.validate` + `scope_violation`) *after* binding — a parameter value can never
-  introduce a new table reference or an IO function. Values are typed literals, not SQL text.
-- Persist variable definitions alongside the saved query (localStorage today; server-side once
-  #33/#34 add a durable store).
+**Implementation:**
+- Add `SPENCER_LLM_FALLBACK_MODELS` env var (comma-separated model list)
+- In `ai_service._call_llm()`, after exhausting all keys for the primary model, iterate through fallback models before raising `LLMRateLimitError`
+- Each fallback model uses its own key pool (or `api_key=None` for env-based auth)
+- Add a circuit breaker: if a provider fails 3× in 5 minutes, skip it for 10 minutes
+- Surface the active model name in the API response so the frontend can show "Powered by Gemini" / "Powered by Claude" badges
 
-**Risk:** low, if and only if params are bound values. The one trap is letting a param inject
-identifiers (table/column names) — disallow that in v1, or validate against the live schema
-allowlist exactly like the existing scope gate.
-
-**Effort:** **S** (one Query Engine feature; reuses the existing validator and history store).
-
-### 2.2 #34 — Shareable read-only dashboard snapshot *(Canvas)*  ⬜
-
-**What:** a "Share" action that produces a read-only, link-addressable snapshot of a dashboard
-(a specific Canvas page or slot) that someone can open without editing.
-
-**Why it matters:** this is the first genuinely *outbound* feature — the first time Spencer
-produces something a non-user consumes. It's the natural "so what do I do with my dashboard"
-payoff after all the Canvas work, and a strong demo/portfolio moment.
-
-**Approach:**
-- Serialize the dashboard definition (tile layout + each tile's aggregate request + chart
-  config) into a durable snapshot record keyed by a share id. Reuse **Foundation 6** (the
-  save/load persistence store from TASK-034/035) — a snapshot is a frozen, read-only slot.
-- A read-only render route that re-runs each tile's aggregate against the **snapshot's**
-  data and renders the existing tiles with all editing affordances stripped.
-- **This is where the single-user model must be revisited** (the audit flagged exactly this):
-  who can open a share link? Options, in order of increasing effort:
-  1. **Owner-only re-open** (a saved view, not really "shared") — trivial, but not the feature.
-  2. **Unguessable-token public link** (anyone with the URL; data is effectively public) —
-     medium effort, the classic "share by link." Needs an explicit product decision because it
-     exposes tenant data outside auth.
-  3. **Authenticated share to named users** — highest effort; needs a sharing/ACL model.
-
-  **Recommendation:** ship **(2) unguessable-token, read-only, snapshot-frozen data** for v1 —
-  it's the feature people mean by "share," and freezing the data into the snapshot avoids
-  live cross-tenant reads. Gate it behind an explicit "this link is public" confirmation, and
-  make snapshots revocable. Defer (3) to the collaboration bet in Part III.
-
-**Risk:** **medium** — it's the first feature that can leak tenant data by design. The
-snapshot-frozen-data approach contains the blast radius; a live-query share would not.
-
-**Effort:** **M** (persistence record + read-only route + the sharing decision above).
-
-### 2.3 #33 — Session export / import *(Data in/out)*  ⬜
-
-**What:** export a whole working session (uploaded tables + transform recipe + Canvas
-dashboards + saved queries) to a file, and import it to reconstruct the session elsewhere.
-Today there's no serialize/restore and `DELETE` is a stub.
-
-**Why it matters:** portability + durability. It's the backup story for a user's work, the way
-to move a session between environments, and the foundation of a "project file" concept. It also
-finally implements a real session lifecycle (the stubbed `DELETE`).
-
-**Approach:**
-- Define a versioned session-manifest format: table data (Parquet, reusing **Foundation 4**
-  export encoders) + the full transform recipe + Canvas/query definitions (reusing
-  **Foundation 6**). Note this depends on **Feature #9's** recipe being *fully* replayable —
-  BACKLOG flagged #9 as 🟡 ("history stores only `{op, column, ts}`, not full params"). If
-  that's still true, promoting the recipe to full-param capture is a prerequisite (or import
-  restores data + dashboards but not a replayable recipe).
-- Import = create a fresh session, register the tables, replay the recipe, restore dashboards.
-- Implement the real `DELETE` as part of the same lifecycle work.
-
-**Risk:** low-to-medium — mostly a data-format + completeness question (does the recipe capture
-enough to replay?). No new external surface.
-
-**Effort:** **M** (format design + the possible #9 recipe upgrade + a real delete).
-
-### 2.4 Deferred Wave-6 tail *(Canvas)*
-
-Two Canvas items were consciously deferred and remain 🟡:
-
-- **#16 — Dashboard templates auto-built from schema.**  Today `ChartCanvas.seed()` is one
-  generic heuristic. The feature is a *picker* of named starter templates ("Sales overview,"
-  "Time-series explorer") chosen by schema shape. Rides Foundation 6 + the existing seed logic.
-  **Effort: S–M.** Pairs naturally with the AI "auto starter-dashboard" (#27) — consider
-  unifying deterministic templates with an optional LLM-suggested layout.
-- **#13 — Global date-range picker + drill-down.**  Drill-down (cross-filter) is built; the
-  standalone global **date-range** control is not, and the cross-filter wire is equality-only.
-  The picker needs a range predicate in the aggregate filter contract (extend beyond equality).
-  **Effort: M** (touches the aggregate filter substrate, so it's slightly more than a widget).
-
-### 2.5 Reconcile the backlog (housekeeping — recommended first)
-
-Because both working docs predate Waves 1–6, several Section-D AI features (#18 explain-chart,
-#21 conversational refinement, #22 explain/optimize SQL, #26 auto-EDA, #29 storytelling,
-#30 chart recommendation) are marked ⬜ in BACKLOG but were delivered *as a batch* in TASK-023.
-Their true per-feature status is **⚠ unverified** — a batch can ship the substrate while
-leaving one sub-feature thin.
-
-**Recommended action:** a short reconciliation pass — re-verify each Section-D item against the
-code, then update `BACKLOG.md`'s status column and its tally. This is cheap, it's the honest
-prerequisite to trusting any "what's left" number, and it may reveal that Part I is even
-smaller than it looks (or surface a thin spot worth a quick follow-up). **This is my
-recommended #1 near-term action** — verify before you build.
+**Files:** `backend/services/ai_service.py`, `backend/services/llm_key_pool.py`, `backend/.env`
 
 ---
 
-## 3. Part II — The road to "sellable" (SaaS-readiness hardening)
+### 2.2 Redis Crash Recovery
 
-This is the larger remaining lift. It follows the audit's **fix-by-risk-tier** policy: fix
-criticals immediately, gate the rest against the milestone that needs them, and keep each fix
-its own small, revertible task (never bundled into a feature commit).
+**Problem:** Portable Redis restart wipes session metadata, schema caches, and LLM cooldown state.
 
-### 3.1 Tier 0 — Criticals ✅ *(shipped; verify the doc)*
+**Solution — Dual-Layer State Recovery:**
+1. **Redis AOF Persistence:** Enable `appendonly yes` in Redis config for write-ahead logging
+2. **DuckDB-as-Source-of-Truth Rebuild:** On startup, if `schema:{uuid}` is missing from Redis but `t_{uuid}_*` tables exist in DuckDB, auto-rebuild the schema cache from `PRAGMA table_info` + `COUNT(DISTINCT)` sampling
+3. **Graceful Degradation:** If Redis is completely unreachable in production, serve requests with in-memory dict cache (no cross-restart persistence, but no crash)
 
-- **S-1 — cross-tenant + filesystem read via `/execute`** → fixed by a per-session scope gate
-  (`scope_violation()`: own-table allowlist + IO-function denylist + structural
-  table-function block) called in `/execute` after `validate()`.
-- **S-2 — Redis-restart data loss** → prod `RedisManager` now fails hard (no silent fakeredis
-  fallback), `sweep()` refuses when the backend isn't real Redis, and the boot-time sweep was
-  removed.
-
-Both shipped in commit `2a63d7f` via **TASK-029** (now in `completed/`). **Action: update
-[`SAAS_READINESS.md`](tasks/SAAS_READINESS.md) to mark S-1/S-2 ✅** — the register still says
-`⏳`, which is stale. The residual **D-2** (below) is the one Tier-0-adjacent item still open.
-
-### 3.2 Tier 1 — Pre-pilot hardening ⬜ *(before a non-you human can hit it)*
-
-The gate before the invite pilot. These bound blast radius the moment a stranger can touch the
-system — wallet (LLM cost) and brute-force.
-
-| # | Sev | Gap | Fix | Effort |
-|---|-----|-----|-----|--------|
-| **S-3** | 🟠 | No per-user LLM quota/attribution — one pilot user can drain the whole Gemini quota. (Note: TASK-024 added *server-side key-pool rotation*; that is **not** per-user metering.) | Thread the account id into `_call_llm`; meter + cap per-user calls/tokens. | M |
-| **S-4** | 🟠 | No rate limiting on auth/AI endpoints → brute-force + cost-bomb. | Per-IP/per-user limits (e.g. slowapi) on login/register + AI routes. | S |
-| **S-5** | 🟡 | Stateless JWT, no server-side revocation — logout/compromise stays valid until expiry. | Token version / denylist, or short expiry + refresh. | M |
-| **S-6** | 🟡 | Token in `localStorage` → readable by any XSS. | Accept as MVP risk, or httpOnly cookie + CSRF (revisit with S-5). | M |
-| **D-1** | 🟡 | `schema:{uuid}` catalog lives only in Redis with no TTL — a flush strands data as 404s. | Mirror the catalog into Postgres, or rebuild from the DuckDB catalog on boot. | M |
-| **D-2** | 🟠 | Empty *real* Redis still risks a reap (residual of S-2): connected but key-less → "absent marker = dead" reaps live sessions. | Ownership-aware sweep: cross-check the `datasets` table (owner row + no marker = *idle*, not *dead*); and/or enable Redis AOF persistence. Pairs with D-1. | M |
-
-**Recommendation:** do **S-4 + S-3 first** (cheapest + highest abuse-surface), then **D-2 + D-1
-together** (they share the durable-catalog idea and close the last data-loss residual). S-5/S-6
-can ship with, or just after, the pilot — they're real but lower-likelihood for an invite pilot.
-
-### 3.3 Tier 2 — Foundational infra ⬜ *(do before real data accrues)*
-
-Cheap now, exponentially more expensive to retrofit once production has rows to preserve.
-
-| # | Sev | Gap | Fix | Effort |
-|---|-----|-----|-----|--------|
-| **I-1** | 🟠 | No schema migrations — `create_all` only, no forward path once prod has rows. | Add Alembic; baseline current schema; migrate forward. | M |
-| **I-2** | 🟠 | No DB backups — no `pg_dump`/restore story. | `pg_dump` cron (or managed snapshot) + documented restore. | S |
-| **A-1** | 🟠 | Single DuckDB connection + single-writer file — the real scaling ceiling (one box, no horizontal scale). | Accept for pilot; true scale = re-architect the analytical layer (see Part IV). | XL (deferred) |
-| **A-2** | 🟡 | Synchronous file I/O on the event loop in `_persist_upload` — a big upload stalls all requests. | Move blocking read/write to a threadpool. | S |
-| **A-3** | 🟡 | Non-atomic `DROP`+`RENAME` in transform apply — a crash mid-swap loses the table. | Single-transaction swap, or swap-then-drop. | S |
-| **I-3** | 🟢 | `web` starts before `backend` is healthy in compose → transient 502s. | `depends_on: condition: service_healthy` + healthcheck. | S |
-
-**Recommendation:** **I-1 + I-2** are the priority (migrations + backups — do them while data
-is still disposable). **A-2 + A-3 + I-3** are small, self-contained robustness wins worth
-folding in opportunistically. **A-1** is the ceiling, not a bug — deferred to Part IV.
-
-### 3.4 Tier 3 — Product-completeness ⬜ *(milestone-gated; before you charge)*
-
-Build just-in-time — no value until the milestone needs it.
-
-| # | Sev | Gap | When |
-|---|-----|-----|------|
-| **P-1** | 🟠 | No billing / plans / usage metering. | Before you charge (Stripe + plan gating once pricing exists). |
-| **P-2** | 🟡 | No password reset / email verification. | Before *public* self-serve signup (not needed for invite pilot). |
-| **P-3** | 🟡 | No observability (Sentry, structured logs, metrics). | Before scaling users. |
-| **P-4** | 🟢 | Register tab still shipped though registration defaults closed. | Quick win: hide when `ALLOW_REGISTRATION=false`. |
-
-**Recommendation:** **P-4 now** (one-line polish, removes a confusing dead-end). **P-3
-(observability) earlier than its tier suggests** — even a light Sentry + structured request
-logs pays for itself the first time a pilot user hits a bug you can't reproduce. P-1/P-2 are
-genuinely milestone-gated; don't build them early.
+**Files:** `backend/services/redis_manager.py`, `backend/services/session_service.py` (new recovery module)
 
 ---
 
-## 4. Part III — Beyond the backlog (v2 / competitive bets)
+### 2.3 Frontend Error Boundaries & Retry Logic
 
-Once the 34 features are complete and the product is safe to sell, these are the bets that
-decide whether Spencer is "a nice cleaning tool" or "the thing a team standardises on." None
-are committed; they're the strategic menu.
+**Problem:** Network errors, 429s, and 503s silently swallow in many components.
 
-### 4.1 The leverage: six foundations are already built
+**Solution:**
+- Wrap every API call in `api.ts` with a global retry interceptor:
+  - **429:** Parse `Retry-After` header, show countdown toast ("AI busy, retrying in 45s..."), auto-retry once
+  - **502/503:** Immediate retry once with 2s delay, then show error toast
+  - **Network Error:** Show "Connection lost" banner with manual retry button
+- Add Vue `<ErrorBoundary>` components around each major view to catch render crashes without white-screening
+- Add a global `window.onerror` and `window.onunhandledrejection` handler that sends errors to a toast instead of silently dying
 
-Every near-term feature is cheap because six reusable substrates already exist (per BACKLOG):
-1. **Transform-op plumbing** (schema union → one compile branch → one dialog block).
-2. **LiteLLM AI-route pattern** (one route + one `AIService` method).
-3. **Ingestion reader** (one branch per format).
-4. **Export encoders** (shared Excel/Parquet/JSON writer).
-5. **Aggregate 2-D contract** (the chart data contract).
-6. **Dashboard/session persistence store**.
-
-New work should keep riding these rather than inventing parallel paths — that discipline is
-what kept Waves 1–7 small.
-
-### 4.2 Multi-table joins / a relationship model ⚑ *(revisit ADR-006)*
-
-**Today:** ADR-006 constrains Spencer to single-table — the multi-table switcher (#32) switches
-the active table but there are **no joins**, and charts are single-table. This is the single
-biggest *capability* ceiling in the product.
-
-**The bet:** a relationship/join model — let users define keys between tables and build
-charts/queries across them (the Power BI "model" tab). This is a large architectural decision,
-not a feature; it touches the aggregate contract, the transform engine, and the Canvas. It's
-also the most-requested capability for anyone with real (relational) data.
-
-**Recommendation:** keep ADR-006 for the pilot, but treat "revisit single-table" as the
-headline v2 decision. Scope it explicitly before building — a half-done join model is worse
-than none.
-
-### 4.3 Deeper AI: from assistant to analyst
-
-The Foundation-2 AI route makes each of these one route + one method:
-- **Agentic multi-step analysis** — "find what's driving the Q3 drop" → the model runs several
-  queries, reasons over results, and returns a narrative (builds on #29 storytelling / #26
-  auto-EDA).
-- **Scheduled / proactive insights** — a daily "what changed in your data" digest.
-- **NL → full dashboard** — extend #16/#27 so a prompt lays out a whole Canvas page, not one
-  seed chart.
-- **Confirm & deepen the Wave-4 batch** — the honest first step (see §2.5): verify #18/#21/#22/
-  #26/#29/#30 are each solid, then deepen the thin ones.
-
-### 4.4 More connectors (Data in/out, v2)
-
-Today ingestion is file-upload (CSV shipped; xlsx/JSON/Parquet/TSV per Wave 2). The v2 bet is
-**live sources**: a Postgres/MySQL/BigQuery connector, Google Sheets, and a generic REST/API
-puller. Each is one ingestion-reader branch conceptually, but connections introduce credential
-storage + refresh — a real security surface to design deliberately.
-
-### 4.5 Collaboration & sharing
-
-The snapshot (#34) is the first outbound step. The full bet: real multi-user workspaces —
-shared sessions, per-object ACLs, comments/annotations on tiles, and presence. This depends on
-revisiting the single-user model (§2.2 option 3) and pairs with the billing/plan work (P-1).
-
-### 4.6 A semantic layer / reusable measures
-
-Let users define named measures ("Net Revenue = …") and dimensions once, reused across every
-chart and query. This is what turns ad-hoc dashboards into a governed, consistent model — the
-difference between a BI *tool* and a BI *platform*. Larger bet; sits on the aggregate contract.
+**Files:** `frontend/src/services/api.ts`, `frontend/src/components/ErrorBoundary.vue` (new), `frontend/src/App.vue`
 
 ---
 
-## 5. Part IV — Architecture evolution & cross-cutting work
+### 2.4 Dashboard Persistence to Backend
 
-### 5.1 The scaling ceiling (A-1) and the path through it
+**Problem:** All dashboards live exclusively in browser `localStorage`. Clearing cache = total dashboard loss.
 
-The single DuckDB connection + single-writer file means **one box, no horizontal scale**. This
-is fine — genuinely fine — for a pilot and for a long time after. But it *is* the ceiling, and
-the path through it is a real re-architecture of the analytical layer, not a tweak:
-- **MotherDuck** (managed, DuckDB-native — smallest conceptual jump),
-- **A dedicated OLAP engine** (ClickHouse) for scale,
-- or **per-tenant connection pooling** as an interim step.
+**Solution — Server-Side Dashboard Storage:**
+1. Add `dashboards` table to `spencer_app.db`:
+   ```sql
+   CREATE TABLE dashboards (
+     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id     INTEGER NOT NULL REFERENCES users(id),
+     session_id  TEXT    NOT NULL,
+     name        TEXT    NOT NULL,
+     pages_json  TEXT    NOT NULL,   -- JSON blob of all pages + tile configs
+     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+   );
+   ```
+2. Add REST endpoints: `POST /sessions/{uuid}/dashboards`, `GET /sessions/{uuid}/dashboards`, `PUT /dashboards/{id}`, `DELETE /dashboards/{id}`
+3. Frontend `useDashboards.ts` writes to both localStorage (instant) AND backend (async debounced). On page load, merge: backend wins on conflict (newer `updated_at`)
+4. **Migration:** On first backend save, upload existing localStorage dashboards automatically
 
-**Recommendation:** do **not** pre-build this. Instrument first (P-3), watch where it actually
-hurts, and re-architect only when a real workload demands it — "out of scope until it hurts,"
-exactly as the audit put it. Flagging it here so it's a *conscious* deferral, not a blind spot.
-
-### 5.2 Testing & CI
-
-There are proof tests for the deploy-safety and S-1/S-2 hardening, and each feature ships with
-a live-HTTP verification run — but there's no mention of a standing regression suite or CI
-gate. As the surface grows, a **CI pipeline** (build + a core transform/quality/aggregate
-regression suite + the existing safety tests) is the cheapest insurance against the review debt
-that batching features naturally accrues. **Recommendation: stand up CI around the S-1/S-2 +
-deploy-safety tests that already exist, then grow coverage on the transform engine** (the
-highest-churn, highest-risk surface).
-
-### 5.3 Observability (P-3, pulled forward)
-
-Restating the Tier-3 note because it's cross-cutting: even minimal Sentry + structured request/
-latency logs should land **before** the pilot scales, not after. You cannot fix what a pilot
-user hit if you can't see it.
-
-### 5.4 Documentation & DX
-
-`README.md` and `.ai/CURRENT_STATE.md` are owned by you and deliberately untouched by this
-process. As features stabilise, the user-facing docs (what each pillar does, the deploy story
-in `DEPLOY.md`) are worth a pass — but that's your call and your surface.
+**Files:** `backend/models/app_db.py`, `backend/routers/dashboard.py` (new), `backend/services/dashboard_service.py` (new), `frontend/src/composables/useDashboards.ts`
 
 ---
 
-## 6. Part V — Recommended sequencing
+### 2.5 Auth Hardening
 
-A proposal, milestone-gated, with the reasoning. Reorderable on request.
+**Problem:** No brute-force protection, no email verification, no password reset.
 
-### Milestone A — "Trustworthy state" (housekeeping, do first)
-1. **Reconcile the backlog** (§2.5) — re-verify Section-D, update `BACKLOG.md` + tally.
-2. **Update `SAAS_READINESS.md`** — mark S-1/S-2 ✅ (shipped in `2a63d7f`).
-3. **Clear the sign-off queue** — TASK-040/041/042 (your `mv` call).
+**Solution:**
+1. **Rate Limiting:** Add `slowapi` with per-IP limits:
+   - `/auth/login`: 5 attempts per minute per IP
+   - `/auth/register`: 3 per hour per IP
+   - `/sessions/{uuid}/ask`: 30 per minute per user (LLM cost gate)
+2. **Account Lockout:** After 10 failed login attempts in 15 minutes, lock account for 30 minutes. Store attempt counter in Redis.
+3. **Password Reset Flow:**
+   - `POST /auth/forgot-password` → generates time-limited JWT reset token → sends email via SMTP (Resend / SendGrid)
+   - `POST /auth/reset-password` → validates token → updates bcrypt hash
+4. **Email Verification (Optional):**
+   - On registration, set `email_verified = False`
+   - Send verification link with JWT token
+   - Block AI endpoints until verified (data prep works fine without)
 
-*Why first: everything downstream is planned off these numbers; make them true before building.
-Cheap, and it's the honest prerequisite.*
-
-### Milestone B — "Feature-complete" (finish the 34)
-4. **#25 parameterized queries** (S) → **#16 templates** (S–M) → **#13 date-range picker** (M)
-   → **#33 session I/O** (M) → **#34 shareable snapshot** (M, includes the sharing decision).
-
-*Why this order: cheapest-first, and #34 last because it carries the single-user-model decision
-and the first outbound-data risk — best done once the rest is stable.*
-
-### Milestone C — "Pilot-ready" (Tier 1 hardening)
-5. **S-4 rate-limit + S-3 per-user quota** (bound abuse/cost) → **D-2 + D-1** (close the last
-   data-loss residual + durable catalog) → **S-5/S-6** (token hardening) → **P-4** (hide the
-   register tab).
-
-### Milestone D — "Data-durable" (Tier 2 infra)
-6. **I-1 migrations + I-2 backups** (while data is still disposable) → **A-2/A-3/I-3** (small
-   robustness wins) → **light P-3 observability**.
-
-### Milestone E — "Sellable" (Tier 3, milestone-gated)
-7. **P-1 billing** (when pricing exists) → **P-2 password reset** (before public signup) →
-   full **P-3 observability**.
-
-### Beyond — v2 bets (Part III), sequenced by strategy, not by this list
-Multi-table joins (§4.2) is the headline capability decision; deeper AI (§4.3) is the fastest
-differentiation given Foundation 2; the scale re-architecture (§5.1) waits until it hurts.
-
-**My single strongest recommendation:** do **Milestone A this week** regardless of anything
-else — the two stale docs and three pending sign-offs are the only things currently making the
-project *look* less finished than it is. It's an afternoon of housekeeping that makes every
-subsequent plan trustworthy.
+**Files:** `backend/routers/auth.py`, `backend/services/auth_service.py`, `backend/services/email_service.py` (new), `backend/models/app_db.py`
 
 ---
 
-## 7. Open decisions (need your call)
+### 2.6 Automated Test Suite
 
-These genuinely change what gets built and can't be defaulted:
+**Problem:** Zero automated test coverage. Regressions are only caught when the user hits them live.
 
-1. **Pilot timing.** Is a closed/invite pilot imminent? If yes, Milestone C jumps ahead of
-   finishing the last features (safe-to-invite beats feature-complete). If no, finish the 34
-   first. *This single answer reorders everything.*
-2. **Share model for #34** (§2.2) — owner-only, unguessable public link, or authenticated ACL?
-   (Recommended: unguessable link + frozen snapshot data for v1.)
-3. **ADR-006 / multi-table joins** (§4.2) — is cross-table analysis a v2 goal, or is
-   single-table the deliberate product boundary? Affects how much of the aggregate contract to
-   generalise now vs. later.
-4. **How far to push AI** (§4.3) — is Spencer "a clean tool with an AI helper," or "an AI
-   analyst with a clean tool underneath"? Determines whether Foundation-2 gets a big v2 invest.
-5. **Push cadence** — the local branch is ahead of `origin/master` by 1 and the working tree
-   carries three tasks' code; when do you want it committed/pushed? (Not done without your ask.)
+**Solution — Layered Test Strategy:**
+1. **Unit Tests (pytest):**
+   - `test_sql_validator.py` — fuzz the AST validator with 50+ attack payloads (SQL injection, cross-tenant reads, I/O functions)
+   - `test_transform_service.py` — validate every transform op produces correct DuckDB SQL
+   - `test_auth_service.py` — bcrypt hashing, JWT minting/validation, duplicate user rejection
+   - `test_aggregate_service.py` — KPI, 1-D, 2-D, scatter, box plot compilation
+2. **Integration Tests (TestClient):**
+   - Full upload → transform → query → export pipeline
+   - Cross-tenant isolation (user A cannot read user B's tables)
+   - LLM mock tests (patch `_call_llm` to return canned SQL, verify self-correction loop)
+3. **Frontend Tests (Vitest):**
+   - Composable unit tests (`useSession`, `useAuth`, `useDashboards`)
+   - Component snapshot tests for critical UI (OpDialog, ChartTile, DataGrid)
+4. **CI Pipeline (GitHub Actions):**
+   ```yaml
+   on: [push, pull_request]
+   jobs:
+     backend-tests:
+       - uses: actions/setup-python@v5
+       - run: uv run pytest -x --tb=short
+     frontend-tests:
+       - uses: actions/setup-node@v4
+       - run: npm run test
+     lint:
+       - run: ruff check backend/
+       - run: npx eslint frontend/src/
+   ```
 
----
-
-## Appendix — Status reconciliation (feature-by-feature)
-
-My best current read as of 2026-08-26. ⚠ marks a status that predates a shipped wave and should
-be re-verified against code (§2.5) before it's trusted.
-
-| # | Feature | BACKLOG (2026-08-22) | Reconciled read |
-|---|---------|----------------------|-----------------|
-| 1 | Column profiler | ✅⏳ | ✅ signed off |
-| 2 | Data-quality panel | ✅⏳ | ✅ + extended (TASK-041/042: partial-null, inconsistent-values, make-positive, ignore/restore) |
-| 3 | Split / merge / extract | ⬜ | ✅ (Wave 1) |
-| 4 | Date toolkit | 🟡 | ✅ (Wave 1) ⚠ |
-| 5 | Text toolkit | 🟡 | ✅ (Wave 1) + collapse-whitespace (TASK-041) ⚠ |
-| 6 | Binning | ⬜ | ✅ (Wave 1) |
-| 7 | Fill down / outlier | ⬜ | ✅ (TASK-019) |
-| 8 | In-grid power | 🟡 | ✅ (TASK-022) + in-cell edit (TASK-041) ⚠ |
-| 9 | Transform recipe (replayable/exportable) | 🟡 | 🟡 **likely still partial** — history may not capture full params; prerequisite for #33 |
-| 10 | Export cleaned (CSV/Excel/Parquet/JSON) | 🟡 | ✅ (Wave 2) ⚠ |
-| 11 | More chart types | 🟡 | ✅ (TASK-025) |
-| 12 | Slicers / cross-filter | ✅⏳ | ✅ (standalone slicer widgets still a nice-to-have) |
-| 13 | Global date-range picker + drill-down | 🟡 | 🟡 **open** — drill-down done, picker not |
-| 14 | KPI deltas / sparkline / target | ⬜ | ✅ (TASK-030/031) |
-| 15 | Drag/resize grid; save/load dashboards | ⬜ | ✅ (TASK-034/035) |
-| 16 | Dashboard templates from schema | 🟡 | 🟡 **open** — generic seed only |
-| 17 | Export dashboard PNG/PDF; present | 🟡 | ✅ (TASK-032) |
-| 18 | Explain this chart (LLM) | ⬜ | ✅ batch (TASK-023) ⚠ verify |
-| 19 | Query history | ✅⏳ | ✅ signed off |
-| 20 | Schema-aware autocomplete | ✅⏳ | ✅ signed off |
-| 21 | Conversational refinement | ⬜ | ✅ batch (TASK-023) ⚠ verify |
-| 22 | Explain / optimize / fix SQL | ⬜ | ✅ batch (TASK-023) ⚠ verify |
-| 23 | Result → tile / new table | ⬜ | ⏳ built (TASK-040, awaiting sign-off) |
-| 24 | Export results | 🟡 | ✅ (Wave 2) ⚠ verify multi-tab/clipboard |
-| 25 | Parameterized queries | ⬜ | ⬜ **open (next)** |
-| 26 | Auto-EDA on upload | ⬜ | ✅ batch (TASK-023) ⚠ verify |
-| 27 | Auto starter-dashboard | ✅⏳ | ✅ (deterministic seed) |
-| 28 | Auto-cleaning suggestions | ✅⏳ | ✅ + extended (TASK-041 seeds) |
-| 29 | Data storytelling | ⬜ | ✅ batch (TASK-023) ⚠ verify |
-| 30 | Chart-type recommendation | ⬜ | ✅ batch (TASK-023) ⚠ verify |
-| 31 | More upload formats | ⬜ | ✅ (Wave 2, Parquet bug fixed) ⚠ |
-| 32 | Multi-table switcher | ⬜ | ✅ signed off (TASK-039) |
-| 33 | Session export / import | ⬜ | ⬜ **open** |
-| 34 | Shareable snapshot | ⬜ | ⬜ **open** |
-
-**Net remaining product work:** #25, #33, #34 (open), #13, #16 (deferred partials), #9 (recipe
-completeness, likely partial), plus the §2.5 verification of the Wave-4 AI batch. Everything
-else on the 34-item list is built or awaiting your sign-off.
+**Files:** `backend/tests/` (new directory), `frontend/vitest.config.ts` (new), `.github/workflows/ci.yml` (new)
 
 ---
 
-*This is a draft for discussion, grounded in the repo's own planning docs and the actual
-completed-task inventory. Correct anything that doesn't match your intent and it'll be revised.*
+## 3. Phase 2 — Production Hardening (Week 3–4)
+
+### 3.1 Alembic Database Migrations
+
+**Problem:** `Base.metadata.create_all()` is brittle — adding a column to `users` or `datasets` requires manual DDL.
+
+**Solution:**
+- Initialize Alembic with `alembic init backend/migrations`
+- Create initial migration from current schema
+- All future schema changes go through `alembic revision --autogenerate`
+- Add `alembic upgrade head` to the startup sequence in `run_dev.py` and production entrypoint
+
+**Files:** `backend/alembic.ini`, `backend/migrations/` (new)
+
+---
+
+### 3.2 Async Query Worker with WebSocket Progress
+
+**Problem:** Large analytical queries (multi-million rows, complex joins) block the Uvicorn thread pool, causing timeouts and degraded responsiveness.
+
+**Solution:**
+1. Add a `BackgroundTasks` queue using Python's `asyncio.Queue` (lightweight, no Celery dependency for now)
+2. `POST /sessions/{uuid}/execute` returns immediately with a `query_id`
+3. Client opens a WebSocket at `/ws/sessions/{uuid}/queries/{query_id}` to receive:
+   - `{"status": "running", "elapsed_ms": 1200}`
+   - `{"status": "complete", "rows": 5000, "columns": [...]}`
+   - `{"status": "error", "message": "..."}`
+4. `POST /admin/kill-query/{query_id}` sends `conn.interrupt()` to DuckDB
+5. Frontend `QueryConsole.vue` shows a progress spinner with elapsed time and a cancel button
+
+**Files:** `backend/routers/query.py`, `backend/services/query_worker.py` (new), `frontend/src/components/QueryConsole.vue`
+
+---
+
+### 3.3 Structured Logging & Observability
+
+**Problem:** Logs are unstructured `print()`-style lines. No metrics, no tracing, no alerting.
+
+**Solution:**
+1. **Structured JSON Logging:** Replace all `logger.info/warning` with structured JSON (using `structlog` or `python-json-logger`)
+2. **Request Tracing:** Add a middleware that generates a `X-Request-ID` UUID for every request, propagated through all log entries
+3. **Metrics Endpoint:** Expose `/metrics` in Prometheus format:
+   - `spencer_llm_calls_total{provider, model, status}`
+   - `spencer_llm_latency_seconds{provider}`
+   - `spencer_queries_total{type}`  (transform, aggregate, ai_execute)
+   - `spencer_active_sessions_gauge`
+   - `spencer_upload_bytes_total`
+4. **Health Check:** `GET /health` → `{"status": "ok", "db": "connected", "redis": "connected", "uptime_s": 12345}`
+5. **Error Tracking (Optional):** Sentry SDK integration with DSN from env var
+
+**Files:** `backend/middleware/` (new), `backend/routers/health.py` (new), `backend/config.py`
+
+---
+
+### 3.4 Input Validation & Payload Hardening
+
+**Problem:** Some endpoints accept large payloads without strict validation.
+
+**Solution:**
+- Add Pydantic `Field(max_length=...)` constraints to every string input:
+  - `question`: max 2000 chars
+  - `formula`: max 5000 chars
+  - `column_name`: max 128 chars, regex `^[A-Za-z_][A-Za-z0-9_ ]*$`
+  - `table_name`: max 128 chars
+- Add `Content-Length` middleware cap (50MB default, configurable)
+- Add `json.loads` depth limiter for nested JSON payloads
+- Validate `sort` parameter format in `/data` to prevent injection through sort column names
+
+**Files:** `backend/models/schemas.py`, `backend/middleware/content_length.py`
+
+---
+
+## 4. Phase 3 — Feature Parity with Power BI (Month 2–3)
+
+### 4.1 Live Data Connectors
+
+**Problem:** Spencer is upload-only. Real analysts need live connections to databases and SaaS platforms.
+
+**Solution — Connector Framework:**
+```
+┌─────────────────────────────────────────────┐
+│            Spencer Connector Hub            │
+├─────────┬──────────┬───────────┬────────────┤
+│ PostgreSQL│ MySQL   │ Snowflake │ BigQuery   │
+│ ClickHouse│ SQLite  │ S3 Parquet│ Google     │
+│ DuckDB   │ MongoDB │ (Iceberg) │  Sheets    │
+│ (remote) │ (read)  │           │            │
+└─────────┴──────────┴───────────┴────────────┘
+```
+
+**Implementation:**
+1. Add `connectors/` module with a `BaseConnector` abstract class:
+   ```python
+   class BaseConnector(ABC):
+       @abstractmethod
+       async def test_connection(self, config: dict) -> bool: ...
+       @abstractmethod
+       async def list_tables(self, config: dict) -> List[str]: ...
+       @abstractmethod
+       async def import_table(self, config: dict, table: str, session_uuid: str) -> str: ...
+   ```
+2. Each connector implements `import_table()` by streaming data into DuckDB via `COPY` or `INSERT INTO ... SELECT FROM`
+3. Add `POST /sessions/{uuid}/connect` endpoint with connector type and credentials
+4. Frontend: Add a "Connect to Database" option alongside "Upload File" in `UploadDropzone.vue`
+5. **Scheduled Refresh:** Combine with APScheduler to auto-refresh connected tables on a cron schedule
+
+**Files:** `backend/connectors/` (new directory), `backend/routers/connector.py` (new), `frontend/src/components/ConnectorDialog.vue` (new)
+
+---
+
+### 4.2 Visual Semantic Model & Multi-Table Joins
+
+**Problem:** Spencer operates in single-active-table mode. No visual join builder, no relationship modeling.
+
+**Solution — Relationship Canvas:**
+1. Add a **Model View** (new route `/model`) with a visual canvas showing tables as cards and relationships as lines
+2. Users drag columns between tables to create joins (inner, left, right, full)
+3. Store relationships in Redis as `relationships:{session_uuid}`:
+   ```json
+   [
+     {
+       "left_table": "orders",
+       "right_table": "customers",
+       "left_column": "customer_id",
+       "right_column": "id",
+       "join_type": "LEFT"
+     }
+   ]
+   ```
+4. When aggregating for Canvas charts, the backend auto-applies the join chain
+5. NL-to-SQL prompt includes the relationship graph so AI queries correctly join tables
+
+**Files:** `frontend/src/views/ModelView.vue` (new), `backend/services/join_service.py` (new), `backend/services/ai_service.py` (prompt update)
+
+---
+
+### 4.3 Calculated Measures & DAX-like Metrics Layer
+
+**Problem:** Spencer only has row-level calculated columns. No reusable aggregated measures (like `Profit Margin = SUM(profit) / SUM(revenue)`).
+
+**Solution — Metrics Catalog:**
+1. Add a `measures` store per session:
+   ```json
+   {
+     "Profit Margin": {
+       "expression": "SUM(\"profit\") / NULLIF(SUM(\"revenue\"), 0)",
+       "format": "percent",
+       "description": "Net profit as percentage of revenue"
+     },
+     "YoY Growth": {
+       "expression": "(SUM(CASE WHEN year = EXTRACT(YEAR FROM CURRENT_DATE) THEN revenue END) - SUM(CASE WHEN year = EXTRACT(YEAR FROM CURRENT_DATE) - 1 THEN revenue END)) / NULLIF(SUM(CASE WHEN year = EXTRACT(YEAR FROM CURRENT_DATE) - 1 THEN revenue END), 0)",
+       "format": "percent",
+       "description": "Year-over-year revenue growth"
+     }
+   }
+   ```
+2. Measures appear in the Canvas field list alongside regular columns
+3. When dropped onto a chart, the backend injects the measure expression into the aggregate query
+4. AI can reference measures by name in NL-to-SQL prompts
+
+**Files:** `backend/routers/measures.py` (new), `frontend/src/components/MeasureEditor.vue` (new)
+
+---
+
+### 4.4 Advanced Filter Panel (Power BI-style Slicers)
+
+**Problem:** Current slicer is a single dropdown tile. Power BI has dedicated visual filter panels, date range slicers, numeric range sliders, and multi-select checkboxes.
+
+**Solution:**
+1. **Filter Pane:** Add a collapsible right-side filter panel on the Canvas (like Power BI's "Filters" pane)
+2. **Filter Types:**
+   - **Dropdown Multi-Select** (categorical columns)
+   - **Date Range Picker** (date/timestamp columns — FROM/TO calendar)
+   - **Numeric Range Slider** (numeric columns — min/max with drag handles)
+   - **Search Filter** (free-text substring match)
+   - **Top N Filter** (show top/bottom N by a measure)
+3. **Scope Levels:**
+   - **Visual-level filter** (applies to one tile only)
+   - **Page-level filter** (applies to all tiles on the current page)
+   - **Report-level filter** (applies across all pages)
+4. All filters are additive (AND logic) and compose with cross-filter clicks
+
+**Files:** `frontend/src/components/FilterPanel.vue` (new), `frontend/src/components/DateRangeSlicer.vue` (new), `frontend/src/components/NumericRangeSlicer.vue` (new)
+
+---
+
+### 4.5 Conditional Formatting & Data Bars
+
+**Problem:** DataGrid is plain text. Power BI has conditional formatting, data bars, color scales, and icon sets.
+
+**Solution:**
+1. **Color Scales:** Apply background gradient (green → yellow → red) to numeric columns based on min/max range
+2. **Data Bars:** Render inline horizontal bars inside cells proportional to value
+3. **Icon Sets:** Show ▲ ▼ ► arrows based on value thresholds
+4. **Rules Engine:** Users define rules: "If `profit_margin` < 0, highlight cell red"
+5. Store formatting rules per column in the dashboard config
+
+**Files:** `frontend/src/components/DataGrid.vue`, `frontend/src/utils/conditionalFormat.ts` (new)
+
+---
+
+### 4.6 Row-Level Security (RLS)
+
+**Problem:** Any authenticated user who knows a session UUID can access all its data (ownership check exists, but no row-level filtering).
+
+**Solution:**
+1. Add `rls_rules` table in `spencer_app.db`:
+   ```sql
+   CREATE TABLE rls_rules (
+     id          INTEGER PRIMARY KEY,
+     session_id  TEXT NOT NULL,
+     user_email  TEXT NOT NULL,
+     filter_expr TEXT NOT NULL  -- e.g., "region = 'APAC'"
+   );
+   ```
+2. Before any data query, inject `WHERE <rls_filter>` into the SQL
+3. RLS filters are validated through the same `_validate_formula()` allowlist
+4. Admin users bypass RLS
+
+**Files:** `backend/services/rls_service.py` (new), `backend/routers/admin.py`
+
+---
+
+## 5. Phase 4 — Enterprise & Scale (Month 4–6)
+
+### 5.1 Horizontal Scaling with DuckDB-WASM or MotherDuck
+
+**Problem:** Single-process DuckDB with file lock cannot serve multiple Uvicorn workers or multiple servers.
+
+**Options:**
+
+| Option | Pros | Cons |
+|--------|------|------|
+| **MotherDuck** (cloud DuckDB) | Serverless, auto-scaling, shared state | Vendor lock-in, cost |
+| **DuckDB per-session files** | Each session gets its own `.db` file, workers can parallelize | More file management, cross-session joins harder |
+| **PostgreSQL + pg_duckdb** | Standard multi-writer RDBMS with DuckDB analytical extension | More infrastructure, higher latency for small queries |
+| **Read replicas** | Primary writer + read-only replicas for `/data` and `/aggregate` | DuckDB doesn't natively support replication |
+
+**Recommended Approach — Per-Session DuckDB Files:**
+1. Replace single `spencer.db` with `spencer_{session_uuid}.db` per session
+2. Each request opens the session-specific file, executes, and closes
+3. Multiple Uvicorn workers can serve different sessions in parallel
+4. Cross-session operations (admin sweep, storage metrics) iterate over session files
+5. This is a stepping stone to MotherDuck migration later
+
+**Files:** `backend/services/duckdb_manager.py` (major refactor)
+
+---
+
+### 5.2 Team Workspaces & RBAC
+
+**Problem:** Spencer is single-user. No sharing, no teams, no role-based access.
+
+**Solution:**
+1. Add `organizations`, `org_members`, and `org_datasets` tables:
+   ```sql
+   organizations (id, name, created_by, created_at)
+   org_members   (org_id, user_id, role ENUM('admin','editor','viewer'))
+   org_datasets  (org_id, session_id, shared_by, shared_at)
+   ```
+2. **Roles:**
+   - **Admin:** Full access, manage members, delete datasets
+   - **Editor:** Upload, transform, create dashboards, run queries
+   - **Viewer:** View dashboards and data only, no edits, no AI queries
+3. **Sharing:**
+   - "Share" button on any dataset → invite by email → creates `org_datasets` entry
+   - Viewers get read-only access (all mutating endpoints return 403)
+4. **Public Links:**
+   - Generate a time-limited, read-only URL for embedding dashboards in external sites
+   - `GET /public/{share_token}/dashboard` → renders dashboard in an iframe-safe mode
+
+**Files:** `backend/models/app_db.py`, `backend/routers/org.py` (new), `backend/services/rbac_service.py` (new)
+
+---
+
+### 5.3 Scheduled Reports & Email Alerts
+
+**Problem:** APScheduler exists for recurring queries, but there's no way to send results via email or Slack.
+
+**Solution:**
+1. After a scheduled query runs, render the results as a formatted HTML table
+2. Optionally attach a PNG snapshot of the associated dashboard page
+3. Deliver via:
+   - **Email:** SMTP (Resend, SendGrid, SES)
+   - **Slack:** Incoming webhook
+   - **Microsoft Teams:** Webhook connector
+4. **Alert Conditions:** "Send email if `total_revenue` drops below \$100,000"
+5. Frontend: Add "Schedule & Alert" dialog accessible from Canvas and Query Engine
+
+**Files:** `backend/services/notification_service.py` (new), `backend/routers/schedule.py` (extend)
+
+---
+
+### 5.4 Audit Log
+
+**Problem:** No record of who did what, when. Critical for compliance and debugging.
+
+**Solution:**
+1. Add `audit_log` table:
+   ```sql
+   audit_log (
+     id, user_id, session_id, action, detail_json,
+     ip_address, user_agent, created_at
+   )
+   ```
+2. Log all mutating actions: login, upload, transform, undo, delete, dashboard save, query execute, share, admin actions
+3. `GET /admin/audit?user_id=&action=&from=&to=` for admin review
+4. Auto-prune logs older than 90 days (configurable)
+
+**Files:** `backend/services/audit_service.py` (new), `backend/models/app_db.py`
+
+---
+
+## 6. Phase 5 — SaaS & Monetization (Month 6+)
+
+### 6.1 Multi-Tenant Cloud Deployment
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    Load Balancer (Nginx / Cloudflare)        │
+├──────────────────────────────────────────────────────────────┤
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
+│  │ Worker 1│  │ Worker 2│  │ Worker 3│  │ Worker N│       │
+│  │ Uvicorn │  │ Uvicorn │  │ Uvicorn │  │ Uvicorn │       │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘       │
+│       │            │            │            │              │
+│  ┌────┴────────────┴────────────┴────────────┴────┐        │
+│  │              Redis Cluster (ElastiCache)        │        │
+│  └────────────────────┬───────────────────────────┘        │
+│                       │                                     │
+│  ┌────────────────────┴───────────────────────────┐        │
+│  │           PostgreSQL (RDS / Aurora)             │        │
+│  │     (users, orgs, dashboards, audit_log)        │        │
+│  └────────────────────────────────────────────────┘        │
+│                                                             │
+│  ┌────────────────────────────────────────────────┐        │
+│  │         S3 / GCS (DuckDB session files)         │        │
+│  │     spencer_{session_uuid}.db per tenant         │        │
+│  └────────────────────────────────────────────────┘        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 Billing & Usage Tiers
+
+| Tier | Price | Limits |
+|------|-------|--------|
+| **Free** | \$0/mo | 3 datasets, 100MB storage, 50 AI queries/day, 1 user |
+| **Pro** | \$19/mo | 20 datasets, 5GB storage, 500 AI queries/day, 5 users |
+| **Team** | \$49/mo | Unlimited datasets, 50GB, unlimited AI, 25 users, RBAC, scheduled reports |
+| **Enterprise** | Custom | SSO/SAML, audit logs, SLA, dedicated support, on-prem option |
+
+**Implementation:**
+- Stripe integration for subscription management
+- Usage counters in Redis: `usage:{user_id}:{YYYY-MM-DD}:ai_queries`
+- Middleware checks tier limits before expensive operations
+- Upgrade prompts shown when limits are approached
+
+### 6.3 Embeddable Analytics (iFrame SDK)
+
+- Generate embeddable `<iframe>` snippets for individual charts or full dashboards
+- JavaScript SDK: `<script src="spencer.js">` → `Spencer.embed('#container', { dashboardId: '...', token: '...' })`
+- Supports theming, filtering, and event callbacks
+- Revenue model: charge per embed view above free tier
+
+---
+
+## 7. Architecture Evolution Map
+
+```mermaid
+graph TD
+    subgraph "Current (v1)"
+        A[Single DuckDB File] --> B[Single Uvicorn Worker]
+        B --> C[Fakeredis / Portable Redis]
+        C --> D[SQLite App DB]
+        D --> E[localStorage Dashboards]
+    end
+
+    subgraph "Phase 1-2 (v2)"
+        F[Per-Session DuckDB Files] --> G[Multi-Worker Uvicorn]
+        G --> H[Persistent Redis with AOF]
+        H --> I[SQLite + Alembic Migrations]
+        I --> J[Server-Side Dashboard Storage]
+    end
+
+    subgraph "Phase 3-4 (v3)"
+        K[MotherDuck / Cloud DuckDB] --> L[Gunicorn + Multiple Workers]
+        L --> M[Redis Cluster]
+        M --> N[PostgreSQL + RBAC]
+        N --> O[S3 File Storage]
+    end
+
+    A -.->|Migration| F
+    F -.->|Migration| K
+    D -.->|Migration| I
+    I -.->|Migration| N
+    E -.->|Migration| J
+    J -.->|Migration| N
+```
+
+---
+
+## 8. Risk Register
+
+| Risk | Impact | Likelihood | Mitigation |
+|------|--------|------------|------------|
+| **Gemini API deprecation** | AI layer goes offline | Medium | Multi-provider fallback chain (Phase 1) |
+| **DuckDB file corruption** | Total data loss for session | Low | Per-session files + S3 backup + snapshot tables |
+| **localStorage quota exceeded** | Dashboard save fails silently | Medium | Server-side persistence (Phase 1) |
+| **SQL injection via formula** | Cross-tenant data breach | Very Low | Existing AST allowlist + continuous fuzz testing |
+| **Key/secret leak in git** | API key compromise | Low | `.gitignore` hardened, pre-commit hook scanning |
+| **Single point of failure** | Complete downtime | High (current) | Multi-worker + health checks + auto-restart |
+| **LLM cost explosion** | Unexpected billing spike | Medium | Per-user quotas + daily caps + usage alerts |
+| **Browser memory exhaustion** | Tab crash on large datasets | Medium | Virtual scrolling (exists) + server-side pagination + row cap warnings |
+
+---
+
+## 9. Priority Matrix
+
+> **Effort:** S = 1-2 days, M = 3-5 days, L = 1-2 weeks, XL = 2-4 weeks
+
+| Priority | Item | Effort | Impact |
+|----------|------|--------|--------|
+| 🔴 P0 | LLM fallback chain | M | Eliminates AI downtime |
+| 🔴 P0 | Auth rate limiting | S | Prevents brute-force attacks |
+| 🔴 P0 | Frontend error boundaries | S | Eliminates white-screen crashes |
+| 🔴 P0 | Dashboard server-side persistence | M | Prevents dashboard data loss |
+| 🟠 P1 | Redis crash recovery | M | Eliminates session loss on restart |
+| 🟠 P1 | Automated test suite (core) | L | Catches regressions before users do |
+| 🟠 P1 | Password reset flow | M | Basic auth completeness |
+| 🟠 P1 | Alembic migrations | S | Safe production schema evolution |
+| 🟡 P2 | Async query worker | L | Unblocks large dataset queries |
+| 🟡 P2 | Structured logging + metrics | M | Production observability |
+| 🟡 P2 | Live data connectors | XL | Major feature unlock |
+| 🟡 P2 | Advanced filter panel | L | Power BI feature parity |
+| 🟢 P3 | Visual join builder | XL | Multi-table analytics |
+| 🟢 P3 | Calculated measures | L | Reusable business metrics |
+| 🟢 P3 | Team workspaces + RBAC | XL | Enterprise readiness |
+| 🟢 P3 | Scheduled reports + alerts | L | Automated intelligence delivery |
+| 🔵 P4 | Embeddable analytics SDK | XL | Revenue channel |
+| 🔵 P4 | SaaS billing (Stripe) | XL | Monetization |
+| 🔵 P4 | SSO / SAML | L | Enterprise sales requirement |
+
+---
+
+> **This document is a living roadmap.** Update it as features ship, priorities shift, or new risks emerge. Every phase builds on the previous one — do not skip phases.
+
+*Last updated: 2026-09-01*
