@@ -600,3 +600,31 @@ class ErrorResponse(BaseModel):
     error: str
     message: str
     retryable: bool
+
+
+# --- Dashboards ---
+
+class DashboardCreate(BaseModel):
+    session_uuid: str
+    name: str
+    pages_json: str
+
+class DashboardUpdate(BaseModel):
+    name: Optional[str] = None
+    pages_json: Optional[str] = None
+
+class DashboardResponse(BaseModel):
+    id: int
+    session_uuid: str
+    name: str
+    pages_json: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str

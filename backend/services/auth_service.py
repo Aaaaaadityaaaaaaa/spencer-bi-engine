@@ -109,3 +109,10 @@ def authenticate(db: Session, email: str, password: str) -> User:
         # One message for both cases so we never reveal whether an email exists.
         raise AuthError("Incorrect email or password")
     return user
+
+def update_password(db: Session, user: User, new_password: str) -> None:
+    if len(new_password) < 8:
+        raise ValueError("Password must be at least 8 characters")
+    user.password_hash = hash_password(new_password)
+    db.commit()
+    db.refresh(user)

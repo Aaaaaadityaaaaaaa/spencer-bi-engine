@@ -10,7 +10,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from routers import session, ai, query, schedule, admin, auth
+from routers import dashboard, session, ai, query, schedule, admin, auth
 from deps import require_admin, require_session_owner
 from services.app_db import init_db
 from services.duckdb_manager import db_manager
@@ -94,6 +94,7 @@ app.add_middleware(
 
 # Auth routes mint / read identity -> mounted WITHOUT a session guard.
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
+app.include_router(dashboard.router)
 
 # session.router is mixed (create_session only mints identity; the /{uuid}/*
 # routes guard per-route inside session.py), so it gets no blanket dependency.

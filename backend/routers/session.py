@@ -360,12 +360,30 @@ async def materialize_query(session_uuid: str, payload: MaterializeRequest):
         columns=columns
     )
 
-@router.get("/{session_uuid}/schema", response_model=SchemaResponse, dependencies=[Depends(require_session_owner)])
-async def get_schema(session_uuid: str):
+@router.get("/{session_uuid}/schema", response_model=SchemaResponse)
+async def get_schema(
+    session_uuid: str,
+    owner = Depends(require_session_owner),
+):
     schema_key = f"schema:{session_uuid}"
     schema_data = redis_manager.get_json(schema_key)
+    
     if not schema_data:
-        raise HTTPException(status_code=404, detail="Schema not found")
+        # CRASH RECOVERY: Rebuild from DuckDB
+        session_prefix = f"t_{session_uuid.replace('-', '_')}"
+        tables_info = await db_manager.run_readwrite(
+            f"SELECT table_name FROM information_schema.tables WHERE table_name LIKE '{session_prefix}%'"
+        )
+        if not tables_info:
+            raise HTTPException(status_code=404, detail="Schema not found")
+            
+        for (tname,) in tables_info:
+            is_primary = (tname == owner.primary_table)
+            await refresh_table_schema_cache(session_uuid, tname, is_primary)
+            
+        schema_data = redis_manager.get_json(schema_key)
+        if not schema_data:
+            raise HTTPException(status_code=404, detail="Schema rebuild failed")
 
     tables = []
     for t_name, t_data in schema_data.items():

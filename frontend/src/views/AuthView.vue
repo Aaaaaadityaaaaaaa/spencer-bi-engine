@@ -15,6 +15,7 @@ import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Loader2, AlertCircle, Eye, EyeOff, Check, Sparkles } from '@lucide/vue'
 import { useAuth } from '../composables/useAuth'
+import { forgotPassword as apiForgot, resetPassword as apiReset } from '../services/api'
 import { useToasts } from '../composables/useToast'
 
 const route = useRoute()
@@ -22,17 +23,21 @@ const router = useRouter()
 const { login, register, busy, error, user } = useAuth()
 const { pushToast } = useToasts()
 
-type Mode = 'login' | 'register'
+type Mode = 'login' | 'register' | 'forgot' | 'reset'
 const mode = ref<Mode>('login')
 
 const email = ref('')
 const password = ref('')
 const showPassword = ref(false)
+const resetToken = ref(route.query.reset_token as string || '')
+if (resetToken.value) {
+  mode.value = 'reset'
+}
 
 // Client-side gate mirroring the server's RegisterRequest (password 8..72). Login only
 // needs both fields present; the server is the real authority on either path.
 const localError = ref<string | null>(null)
-const canSubmit = computed(() => email.value.trim().length > 0 && password.value.length > 0)
+const canSubmit = computed(() => { if (mode.value === 'forgot') return email.value.trim().length > 0; if (mode.value === 'reset') return password.value.length > 0; return email.value.trim().length > 0 && password.value.length > 0 })
 
 // Loose RFC-5322-ish check — just enough to gate the live "valid" checkmark; the
 // server still has the final say.
@@ -64,16 +69,36 @@ function switchMode(next: Mode): void {
 }
 
 function forgotPassword(): void {
-  // Honest placeholder: the backend has no /auth/forgot endpoint yet, so the link
-  // acknowledges itself instead of pretending. A future task can wire the real flow.
-  pushToast('Password recovery is coming soon. Reach out from the docs site for now.', 'info', { duration: 6000 })
+  mode.value = 'forgot'
+  localError.value = null
 }
 
 async function submit(): Promise<void> {
   if (!canSubmit.value || busy.value) return
   localError.value = null
-  if (mode.value === 'register' && password.value.length < 8) {
+  if ((mode.value === 'register' || mode.value === 'reset') && password.value.length < 8) {
     localError.value = 'Password must be at least 8 characters.'
+    return
+  }
+  if (mode.value === 'forgot') {
+    try {
+      const res = await apiForgot(email.value)
+      pushToast(res.message, 'success')
+      mode.value = 'login'
+    } catch (e: any) {
+      localError.value = e?.response?.data?.detail || e.message
+    }
+    return
+  }
+  if (mode.value === 'reset') {
+    try {
+      const res = await apiReset(resetToken.value, password.value)
+      pushToast(res.message, 'success')
+      mode.value = 'login'
+      router.replace('/login')
+    } catch (e: any) {
+      localError.value = e?.response?.data?.detail || e.message
+    }
     return
   }
   const ok =
@@ -81,15 +106,12 @@ async function submit(): Promise<void> {
       ? await login(email.value, password.value)
       : await register(email.value, password.value)
   if (!ok) return
-  // Success toast (Batch 2) — silent redirect used to feel like the form ate itself.
+  // Success toast
   const who = user.value?.email ?? 'your workspace'
   pushToast(
     mode.value === 'login' ? `Signed in as ${who}` : `Workspace created for ${who}`,
-    'success',
+    'success'
   )
-  // ?redirect is set by the router guard when it bounces an unauthenticated deep-link.
-  // Only honor an app-internal path (leading "/", not "//") so it can't be used as an
-  // open redirect to another origin.
   const raw = route.query.redirect
   const redirect = typeof raw === 'string' && raw.startsWith('/') && !raw.startsWith('//') ? raw : '/table'
   await router.replace(redirect)
@@ -118,13 +140,10 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
         </div>
         <div class="space-y-1">
           <h1 class="text-lg font-semibold text-ink-gray-9">
-            {{ mode === 'login' ? 'Welcome back to Spencer' : 'Welcome to Spencer' }}
+            {{ mode === 'login' ? 'Welcome back to Spencer' : mode === 'register' ? 'Welcome to Spencer' : mode === 'forgot' ? 'Reset Password' : 'New Password' }}
           </h1>
           <p class="mx-auto max-w-xs text-sm text-ink-gray-5">
-            {{ mode === 'login'
-              ? 'Pick up where you left off in your workspace.'
-              : 'Drop a CSV, ask in English, get a dashboard in seconds.'
-            }}
+            {{ mode === 'login' ? 'Pick up where you left off in your workspace.' : mode === 'register' ? 'Drop a CSV, ask in English, get a dashboard in seconds.' : mode === 'forgot' ? 'Enter your email to receive a reset link.' : 'Enter your new password below.' }}
           </p>
         </div>
       </div>
@@ -132,7 +151,7 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
       <!-- Card -->
       <div class="rounded-5 border border-outline-gray-1 bg-surface-base p-6 shadow-sm">
         <!-- Segmented Login / Register toggle -->
-        <div class="mb-5 grid grid-cols-2 gap-1 rounded-3 bg-surface-gray-2 p-1">
+        <div v-if="mode === 'login' || mode === 'register'" class="mb-5 grid grid-cols-2 gap-1 rounded-3 bg-surface-gray-2 p-1">
           <button
             type="button"
             class="rounded-2 px-3 py-1.5 text-sm font-medium transition-colors"
@@ -157,7 +176,7 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
 
         <form class="space-y-4" @submit.prevent="submit">
           <!-- Email -->
-          <div>
+          <div v-if="mode !== 'reset'">
             <label :class="labelCls" for="auth-email">Email</label>
             <div class="relative">
               <input
@@ -181,7 +200,7 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
           </div>
 
           <!-- Password + (optional) show/hide + strength meter (register only) -->
-          <div>
+          <div v-if="mode !== 'forgot'">
             <div class="mb-1 flex items-baseline justify-between">
               <label :class="labelCls" for="auth-password">Password</label>
               <button
@@ -258,7 +277,7 @@ const labelCls = 'block text-xs font-medium text-ink-gray-7 mb-1'
             :disabled="!canSubmit || busy"
           >
             <Loader2 v-if="busy" class="h-4 w-4 animate-spin" />
-            {{ mode === 'login' ? 'Sign in' : 'Create account' }}
+            {{ mode === 'login' ? 'Sign in' : mode === 'register' ? 'Create account' : mode === 'forgot' ? 'Send Link' : 'Set Password' }}
           </button>
         </form>
       </div>

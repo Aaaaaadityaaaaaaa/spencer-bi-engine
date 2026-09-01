@@ -28,6 +28,7 @@ import type {
   ExplainChartRequest,
   ExecuteResultResponse,
   CustomInstruction,
+  DashboardResponse,
   AuthTokenResponse,
   AuthUser,
 } from '../types'
@@ -477,5 +478,41 @@ export async function exportRows(
     { columns, rows, format: 'xlsx' },
     { responseType: 'blob' },
   )
+  return data
+}
+
+// --- Dashboard Endpoints ---
+
+export async function listDashboards(): Promise<DashboardResponse[]> {
+  const { data } = await http.get<DashboardResponse[]>('/dashboards/')
+  return data
+}
+
+export async function createDashboard(session_uuid: string, name: string, pages_json: string): Promise<DashboardResponse> {
+  const { data } = await http.post<DashboardResponse>('/dashboards/', { session_uuid, name, pages_json })
+  return data
+}
+
+export async function updateDashboard(id: number, name?: string, pages_json?: string): Promise<DashboardResponse> {
+  const payload: any = {}
+  if (name !== undefined) payload.name = name
+  if (pages_json !== undefined) payload.pages_json = pages_json
+  const { data } = await http.put<DashboardResponse>(`/dashboards/${id}`, payload)
+  return data
+}
+
+export async function deleteDashboard(id: number): Promise<void> {
+  await http.delete(`/dashboards/${id}`)
+}
+
+// --- Auth Endpoints (Forgot / Reset Password) ---
+
+export async function forgotPassword(email: string): Promise<{status: string, message: string}> {
+  const { data } = await http.post('/auth/forgot-password', { email })
+  return data
+}
+
+export async function resetPassword(token: string, new_password: string): Promise<{status: string, message: string}> {
+  const { data } = await http.post('/auth/reset-password', { token, new_password })
   return data
 }

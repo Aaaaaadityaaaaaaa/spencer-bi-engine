@@ -75,6 +75,21 @@ class Dataset(Base):
     last_active_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
 
 
+
+class Dashboard(Base):
+    """Server-side persistence for user dashboards.
+    Replaces browser localStorage entirely so dashboards survive cache clears."""
+
+    __tablename__ = "dashboards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    session_uuid: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    pages_json: Mapped[str] = mapped_column(String, nullable=False)  # JSON blob of pages + tiles
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
 def init_db() -> None:
     """Create tables if absent. Idempotent; called at app startup (main.py) and
     by the test harness. No migration framework this wave -- create_all only,

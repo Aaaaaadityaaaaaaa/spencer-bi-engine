@@ -748,3 +748,13 @@ export interface QualityReport {
   findings: QualityFinding[]
   compiled_sql: string
 }
+
+// --- Dashboards ---
+export interface DashboardResponse {
+  id: number;
+  session_uuid: string;
+  name: string;
+  pages_json: string;
+  created_at: string;
+  updated_at: string;
+}

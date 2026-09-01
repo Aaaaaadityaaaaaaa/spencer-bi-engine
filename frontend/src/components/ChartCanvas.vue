@@ -808,12 +808,12 @@ function focusOnMount(el: unknown): void {
 }
 
 // --- #15 named Save/Load slots (TASK-035) ----------------------------------------
-const { dashboards, saveDashboard, loadDashboard, renameDashboard, deleteDashboard } = useDashboards()
+const { dashboards, saveDashboard, loadDashboard, renameDashboard, deleteDashboard, loadFromServer } = useDashboards()
 const { pushToast } = useToasts()
 const savedOpen = ref(false)
 const savedPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
 const saveName = ref('')
-const renamingSavedId = ref<string | null>(null)
+const renamingSavedId = ref<number | null>(null)
 const savedNameDraft = ref('')
 
 function toggleSaved(e: MouseEvent): void {
@@ -831,7 +831,7 @@ function saveCurrentDashboard(): void {
   const name = saveName.value.trim()
   if (!name) return
   // useDashboards deep-clones, so the saved slot is severed from the live reactive board.
-  saveDashboard(name, { pages: pages.value, activePageId: activePageId.value })
+  if (sessionUuid.value) { saveDashboard(sessionUuid.value, name, { pages: pages.value, activePageId: activePageId.value }) }
   saveName.value = ''
   pushToast('Dashboard "' + name + '" saved', 'success')
 }
@@ -839,7 +839,7 @@ function saveCurrentDashboard(): void {
 // Replace the LIVE board with a saved slot's pages, then adopt it as the persisted active
 // board and refetch. Ids come straight from the stored snapshot (a fresh deep copy), so the
 // counters must resume past them; a stale activePageId falls back to the first page.
-function loadSavedDashboard(id: string): void {
+function loadSavedDashboard(id: number): void {
   const snap = loadDashboard(id)
   if (!snap || snap.pages.length === 0) return
   clearAllTileState()
