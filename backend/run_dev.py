@@ -25,6 +25,14 @@ if os.path.exists(ENV_PATH):
 
 host = os.environ.get("SPENCER_HOST", "127.0.0.1")
 port = os.environ.get("SPENCER_PORT", "8000")
+
+# Run database migrations before starting the server
+print("Running Alembic migrations...")
+migration_code = subprocess.call([sys.executable, "-m", "alembic", "upgrade", "head"])
+if migration_code != 0:
+    print("Database migration failed. Exiting.")
+    sys.exit(migration_code)
+
 sys.exit(
     subprocess.call(
         [

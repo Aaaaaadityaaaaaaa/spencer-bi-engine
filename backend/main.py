@@ -107,6 +107,7 @@ async def extract_session_context(request: Request, call_next):
         current_session_id.set(None)
     return await call_next(request)
 
+app.include_router(health.router, tags=["Health"])
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(dashboard.router)
 
@@ -133,9 +134,7 @@ app.include_router(
     dependencies=[Depends(require_admin)],
 )
 
-@app.get("/health", tags=["Admin"])
-def health_check():
-    return {"status": "ok"}
+
 
 @app.get("/test-duckdb", tags=["Admin"], dependencies=[Depends(require_admin)])
 async def test_duckdb():

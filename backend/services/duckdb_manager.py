@@ -77,6 +77,12 @@ class DuckDBManager:
                 cursor.close()
         return await self.execute_async(_exec)
         
+    def interrupt_session(self, session_id: str):
+        """Instantly interrupts any running query on this session's connection."""
+        if session_id in self._conns:
+            self._conns[session_id].interrupt()
+            logger.info(f"Interrupted running query on session: {session_id}")
+
     def close_and_delete_session(self, session_id: str):
         """Called by cleanup_service to garbage collect the session."""
         if session_id in self._conns:

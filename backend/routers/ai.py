@@ -1,3 +1,5 @@
+import time
+import asyncio
 """Query Engine routes (Phase 6): NL->SQL, SQL execution, and the business
 dictionary. Mounted under /sessions (see main.py), so paths are
 /sessions/{session_uuid}/...
@@ -20,7 +22,7 @@ import hashlib
 import logging
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from models.schemas import (
     AskRequest, AskResponse,
@@ -35,6 +37,7 @@ from models.schemas import (
     ExplainChartRequest,
 )
 from services.duckdb_manager import db_manager
+from services.query_worker import query_worker
 from services.redis_manager import redis_manager
 from services.sql_validator import sql_validator
 from services.alias_service import resolve_aliases
@@ -158,32 +161,22 @@ async def ask_question(session_uuid: str, payload: AskRequest):
     return AskResponse(sql=result["sql"], cache_hit=False, retries_used=result["retries_used"])
 
 
-@router.post("/{session_uuid}/execute", response_model=ExecuteResultResponse)
+@router.post("/{session_uuid}/execute")
 async def execute_query(session_uuid: str, payload: ExecuteRequest):
-    """Run a user-reviewed SELECT and return rows as JSON (synchronous).
+    """Run a user-reviewed SELECT and return a query_id for WebSocket streaming.
 
     Defense: validate first (fail-closed -- this catches SQL the user edited by
-    hand, not just AI output), then execute ONLY inside run_sandboxed (rolled back,
-    so even a validator bypass could not mutate data). Column names are recovered
-    with a read-only DESCRIBE (run_sandboxed has none), and rows are capped at
-    MAX_ROWS with a `truncated` flag. The documented async query_id/poll/MessagePack
-    path (/queries/{id} below) stays deferred."""
+    hand, not just AI output), then submit to query_worker.
+    """
     sql = (payload.sql or "").strip()
-    # B (user choice): let the user write the ORIGINAL table name instead of the long
-    # t_<uuid>_ physical name. Rewritten AST-level to the physical name before validation,
-    # so the tenant-isolation gate still runs on real physical names. AI-generated SQL (which
-    # already uses physical names) is unaffected.
     sql = await resolve_aliases(sql, session_uuid)
+    
     if not sql_validator.validate(sql):
         raise HTTPException(
             status_code=400,
             detail="This query was rejected: only a single read-only SELECT is allowed.",
         )
 
-    # S-1 (TASK-029): read-only is necessary but NOT sufficient on the shared
-    # single-file DuckDB -- a bare SELECT can still read another tenant's table
-    # or a file (read_csv_auto/read_text). Enforce that this query touches ONLY
-    # this session's own tables and calls no filesystem/external function.
     scope_reason = sql_validator.scope_violation(sql, session_uuid)
     if scope_reason:
         raise HTTPException(
@@ -191,37 +184,12 @@ async def execute_query(session_uuid: str, payload: ExecuteRequest):
             detail=f"This query was rejected: it {scope_reason}.",
         )
 
-    # Strip a trailing ';' so the statement can be wrapped as a subquery. (Stacked
-    # statements were already rejected by the validator; this only tidies a lone
-    # trailing terminator so `SELECT ...;` still runs.)
     inner = sql.rstrip(";").rstrip()
-
-    try:
-        # Column names/types: DESCRIBE is read-only and also sandboxed (rolled back).
-        desc = await db_manager.run_sandboxed(f"DESCRIBE SELECT * FROM ({inner}) _q")
-        # Rows, capped: fetch one extra to detect truncation.
-        raw = await db_manager.run_sandboxed(f"SELECT * FROM ({inner}) _q LIMIT {MAX_ROWS + 1}")
-    except Exception as exc:
-        # A validated SELECT can still fail at run time (unknown column, type
-        # mismatch). Surface it as a 400 for the editor to display.
-        logger.info("execute: query failed at run time: %s", exc)
-        raise HTTPException(status_code=400, detail=f"Query failed: {exc}")
-
-    names = [r[0] for r in (desc or [])]
-    types = [r[1] for r in (desc or [])]
-
-    rows_raw = raw or []
-    truncated = len(rows_raw) > MAX_ROWS
-    if truncated:
-        rows_raw = rows_raw[:MAX_ROWS]
-    rows = [dict(zip(names, r)) for r in rows_raw]
-
-    return ExecuteResultResponse(
-        columns=[PreviewColumn(name=n, type=t) for n, t in zip(names, types)],
-        rows=rows,
-        row_count=len(rows),
-        truncated=truncated,
-    )
+    
+    query_id = query_worker.start_query(session_uuid, inner)
+    
+    # Return 202 Accepted style payload
+    return {"query_id": query_id, "status": "running"}
 
 
 # --- Wave 4: AI batch (Foundation 2) -----------------------------------------
@@ -401,3 +369,54 @@ async def delete_instruction(session_uuid: str, term: str):
     redis_manager.set_json(f"bizdict:{session_uuid}", biz)
     redis_manager.incr_bizdict_version(session_uuid)
     return {"status": "deleted", "term": term}
+
+
+@router.websocket("/{session_uuid}/queries/{query_id}/ws")
+async def query_websocket(websocket: WebSocket, session_uuid: str, query_id: str):
+    await websocket.accept()
+    
+    job = query_worker.get_status(query_id)
+    if not job or job["session_uuid"] != session_uuid:
+        await websocket.send_json({"status": "error", "message": "Query not found or unauthorized"})
+        await websocket.close()
+        return
+
+    if job["status"] in ("completed", "error"):
+        if job["status"] == "completed":
+            await websocket.send_json({"status": "completed", "result": job["result"]})
+        else:
+            await websocket.send_json({"status": "error", "message": job["error"]})
+        await websocket.close()
+        return
+
+    q = await query_worker.subscribe(query_id)
+    try:
+        while True:
+            # Send ping
+            await websocket.send_json({"status": "running", "elapsed_ms": int((time.time() - job["start_time"]) * 1000)})
+            
+            try:
+                # Wait for update or timeout to ping again
+                msg = await asyncio.wait_for(q.get(), timeout=1.0)
+                await websocket.send_json(msg)
+                if msg["status"] in ("completed", "error"):
+                    break
+            except asyncio.TimeoutError:
+                continue
+    except WebSocketDisconnect:
+        pass
+    finally:
+        query_worker.unsubscribe(query_id, q)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+@router.post("/{session_uuid}/queries/{query_id}/cancel")
+async def cancel_query(session_uuid: str, query_id: str):
+    job = query_worker.get_status(query_id)
+    if not job or job["session_uuid"] != session_uuid:
+        raise HTTPException(status_code=404, detail="Query not found")
+    
+    query_worker.cancel_query(query_id)
+    return {"status": "cancelled"}

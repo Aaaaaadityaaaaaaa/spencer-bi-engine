@@ -18,7 +18,7 @@ class LoginRequest(BaseModel):
 
 class UserResponse(BaseModel):
     id: int
-    email: str
+    email: str = Field(..., max_length=255)
     is_admin: bool
     created_at: datetime
 
@@ -29,7 +29,7 @@ class TokenResponse(BaseModel):
 
 
 class ColumnSchema(BaseModel):
-    name: str
+    name: str = Field(..., max_length=255)
     type: str
     cardinality: int
 
@@ -243,7 +243,7 @@ class TransformResponse(BaseModel):
     row_count: int
 
 class PreviewColumn(BaseModel):
-    name: str
+    name: str = Field(..., max_length=255)
     type: str
 
 class TransformPreviewResponse(BaseModel):
@@ -467,29 +467,29 @@ class AskTurn(BaseModel):
     refinement). Pure prompt context: the `sql` here is the app's OWN prior output
     that was already validated + dry-run clean; it is never executed or trusted as
     a query -- it only helps the model understand what "that" refers to."""
-    question: str
-    sql: str
+    question: str = Field(..., max_length=2000)
+    sql: str = Field(..., max_length=50000)
 
 class AskRequest(BaseModel):
-    question: str
+    question: str = Field(..., max_length=2000)
     # #21: optional prior turns (oldest -> newest) so a follow-up refines the last
     # query instead of starting cold. Optional ⇒ the single-shot contract is intact.
     history: Optional[List[AskTurn]] = None
 
 class AskResponse(BaseModel):
-    sql: str
+    sql: str = Field(..., max_length=50000)
     cache_hit: bool
     retries_used: int
 
 class ExecuteRequest(BaseModel):
-    sql: str
+    sql: str = Field(..., max_length=50000)
 
 class MaterializeRequest(BaseModel):
     """#23: persist a Query Engine SELECT's result as a real, reusable session table.
     `sql` is the reviewed SELECT (re-validated + tenant-scoped server-side, exactly
     like /execute); `name` is an optional friendly table name (sanitized + deduped
     server-side, defaulting to 'query_result')."""
-    sql: str
+    sql: str = Field(..., max_length=50000)
     name: Optional[str] = None
 
 class ExecuteResponse(BaseModel):
@@ -537,7 +537,7 @@ class SqlAssistRequest(BaseModel):
     error text (from a failed /execute); explain/optimize ignore it. `sql` is the
     editor's current text -- it is treated as untrusted and re-validated server-side."""
     mode: Literal["explain", "fix", "optimize"]
-    sql: str
+    sql: str = Field(..., max_length=50000)
     error: Optional[str] = None
 
 class SqlAssistResponse(BaseModel):
@@ -589,7 +589,7 @@ class ExplainChartRequest(BaseModel):
     values: List[Any] = Field(default_factory=list)
 
 class ScheduleRequest(BaseModel):
-    question: str
+    question: str = Field(..., max_length=2000)
     cron: str
 
 class ScheduleResponse(BaseModel):
@@ -606,7 +606,7 @@ class ErrorResponse(BaseModel):
 
 class DashboardCreate(BaseModel):
     session_uuid: str
-    name: str
+    name: str = Field(..., max_length=255)
     pages_json: str
 
 class DashboardUpdate(BaseModel):
@@ -616,14 +616,14 @@ class DashboardUpdate(BaseModel):
 class DashboardResponse(BaseModel):
     id: int
     session_uuid: str
-    name: str
+    name: str = Field(..., max_length=255)
     pages_json: str
     created_at: datetime
     updated_at: datetime
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    email: str = Field(..., max_length=255)
 
 class ResetPasswordRequest(BaseModel):
     token: str

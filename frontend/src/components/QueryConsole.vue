@@ -18,7 +18,7 @@ import { useToasts } from '../composables/useToast'
 import { useQueryHistory } from '../composables/useQueryHistory'
 import { useQuestionHandoff } from '../composables/useQuestionHandoff'
 import { useCanvasSeed } from '../composables/useCanvasSeed'
-import { askQuestion, sqlAssist, executeSql, exportRows, apiErrorMessage } from '../services/api'
+import { askQuestion, sqlAssist, executeSql, streamQueryProgress, cancelQuery, exportRows, apiErrorMessage } from '../services/api'
 import { friendlyTableName, displaySql } from '../utils/tableName'
 import { copyToClipboard } from '../utils/csvExport'
 import type { AskTurn, SqlAssistMode, ExecuteResultResponse } from '../types'
@@ -67,6 +67,8 @@ function insertToken(text: string | null): void {
 
 const asking = ref(false)
 const running = ref(false)
+const queryId = ref<string | null>(null)
+const elapsedMs = ref(0)
 const askError = ref<string | null>(null)
 const runError = ref<string | null>(null)
 // Non-null after a successful /ask: shows whether the SQL came from cache and how many
@@ -169,9 +171,19 @@ async function run(): Promise<void> {
   if (!uuid || !sql || running.value) return
   running.value = true
   runError.value = null
+  elapsedMs.value = 0
+  queryId.value = null
+  
   try {
-    const res = await executeSql(uuid, sql)
+    const startRes = await executeSql(uuid, sql)
+    queryId.value = startRes.query_id
+    
     if (uuid !== sessionUuid.value) return
+    
+    const res = await streamQueryProgress(uuid, queryId.value, (ms) => {
+      elapsedMs.value = ms
+    })
+    
     result.value = res
     lastRanSql.value = sql
     recordRun({ sql, ok: true, rowCount: res.row_count })
@@ -183,7 +195,20 @@ async function run(): Promise<void> {
       recordRun({ sql, ok: false, error: msg })
     }
   } finally {
-    if (uuid === sessionUuid.value) running.value = false
+    if (uuid === sessionUuid.value) {
+      running.value = false
+      queryId.value = null
+    }
+  }
+}
+
+async function abortQuery() {
+  if (sessionUuid.value && queryId.value) {
+    try {
+      await cancelQuery(sessionUuid.value, queryId.value)
+    } catch (e) {
+      console.error("Cancel failed:", e)
+    }
   }
 }
 
@@ -534,16 +559,26 @@ async function exportResults(): Promise<void> {
             </button>
             <span class="text-[11px] text-ink-gray-4">⌘/Ctrl + Enter to run</span>
           </div>
-          <button
-            type="button"
-            class="btn btn-ghost"
-            :disabled="running || !sqlText.trim()"
-            @click="run"
-          >
-            <Loader2 v-if="running" class="h-4 w-4 animate-spin text-primary" />
-            <Play v-else class="h-4 w-4 text-primary" />
-            Run
-          </button>
+          <div class="flex items-center gap-2">
+            <span v-if="running" class="text-xs text-ink-gray-5 font-medium tabular-nums">{{ (elapsedMs / 1000).toFixed(1) }}s</span>
+            <button
+              v-if="running"
+              type="button"
+              class="btn btn-ghost text-ink-red hover:bg-red-50"
+              @click="abortQuery"
+            >
+              <Square class="h-4 w-4" /> Cancel
+            </button>
+            <button
+              v-else
+              type="button"
+              class="btn btn-ghost"
+              :disabled="!sqlText.trim()"
+              @click="run"
+            >
+              <Play class="h-4 w-4 text-primary" /> Run
+            </button>
+          </div>
         </div>
 
         <!-- Inline "name this query" input (opened by Save) -->

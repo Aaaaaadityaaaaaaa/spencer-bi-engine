@@ -94,4 +94,4 @@ def init_db() -> None:
     """Create tables if absent. Idempotent; called at app startup (main.py) and
     by the test harness. No migration framework this wave -- create_all only,
     which is enough for additive schema on a fresh deploy."""
-    Base.metadata.create_all(engine)
+    # Base.metadata.create_all(engine) # Replaced by Alembic migrations

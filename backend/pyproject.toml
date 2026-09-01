@@ -47,6 +47,9 @@ dependencies = [
     # Postgres driver for the production APP_DB_URL (postgresql+psycopg://...).
     # Unused on the SQLite dev/default path; declared so a prod install has it.
     "psycopg[binary]>=3",
+    "alembic>=1.19.1",
+    "python-json-logger>=4.2.0",
+    "prometheus-client>=0.26.0",
 ]
 
 [project.optional-dependencies]
