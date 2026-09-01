@@ -10,7 +10,9 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from routers import dashboard, session, ai, query, schedule, admin, auth
+import logger
+from middleware.metrics import RequestTracingMiddleware
+from routers import dashboard, session, ai, query, schedule, admin, auth, health
 from deps import require_admin, require_session_owner
 from services.app_db import init_db
 from services.duckdb_manager import db_manager
