@@ -288,6 +288,25 @@ export interface HistoryResponse {
 }
 
 // GET /schema response (SchemaResponse) — re-read after a transform to resync columns.
+
+export interface Relationship {
+  id: string
+  session_uuid: string
+  from_table: string
+  from_column: string
+  to_table: string
+  to_column: string
+  join_type: 'inner' | 'left' | 'right' | 'full'
+}
+
+export interface RelationshipCreate {
+  from_table: string
+  from_column: string
+  to_table: string
+  to_column: string
+  join_type: 'inner' | 'left' | 'right' | 'full'
+}
+
 export interface SchemaTable {
   table_name: string
   is_primary: boolean
@@ -421,7 +440,7 @@ export interface KpiConfig {
   sparkType?: 'line' | 'area' | 'bar' // sparkline style (default 'line')
   align?: 'left' | 'center' // value alignment (default 'left')
   border?: boolean // card border (default true)
-  radius?: 'sm' | 'md' | 'lg' // card corner radius (default 'md')
+  radius?: 'none' | 'sm' | 'md' | 'lg' // card corner radius (default 'md')
   shadow?: boolean // card drop shadow (default false)
   fontFamily?: string | null // custom font family
   valueFontSize?: number | null // custom font size for values
@@ -450,6 +469,10 @@ export interface ChartConfig {
   // TASK-036 (Power BI Canvas, part 4): more per-tile presentation, all optional/back-compat.
   bg?: string | null // card background fill (hex/oklch); null/absent ⇒ default surface
   bold?: boolean // bold the title
+
+  // Formatting additions
+  boldX?: boolean
+  boldY?: boolean
   topN?: number | null // cap grouped categories to the top-N by measure; null/absent ⇒ server default (top-50, value DESC)
   // Power BI–style drawer options (all optional / back-compatible).
   showLegend?: boolean // show the series legend on breakdown charts (default true)
@@ -465,7 +488,7 @@ export interface ChartConfig {
   areaOpacity?: number | null // area fill opacity 0..1 (default 0.2)
   sortDir?: 'auto' | 'desc' | 'asc' | 'alpha' // category sort order (default 'auto' = top-N desc)
   border?: boolean // card border (default true)
-  radius?: 'sm' | 'md' | 'lg' // card corner radius (default 'md')
+  radius?: 'none' | 'sm' | 'md' | 'lg' // card corner radius (default 'md')
   shadow?: boolean // card drop shadow (default false)
   fontFamily?: string | null // custom font family
   valueFontSize?: number | null // custom font size for values

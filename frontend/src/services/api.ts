@@ -12,6 +12,8 @@ import type {
   TransformPreviewResponse,
   HistoryResponse,
   SchemaResponse,
+  Relationship,
+  RelationshipCreate,
   TableUploadResponse,
   AggregateRequest,
   AggregateResponse,
@@ -238,6 +240,20 @@ export async function redoTransform(
 }
 
 // GET /sessions/{id}/history -- steps + can_undo/can_redo state.
+
+export async function gotoTransformStep(
+  sessionUuid: string,
+  stepIndex: number,
+  tableName?: string
+): Promise<TransformResponse> {
+  const { data } = await http.post<TransformResponse>(
+    `/sessions/${sessionUuid}/history/goto/${stepIndex}`,
+    null,
+    { params: tableParam(tableName) }
+  )
+  return data
+}
+
 export async function fetchHistory(
   sessionUuid: string,
   tableName?: string,
@@ -562,4 +578,19 @@ export async function forgotPassword(email: string): Promise<{status: string, me
 export async function resetPassword(token: string, new_password: string): Promise<{status: string, message: string}> {
   const { data } = await http.post('/auth/reset-password', { token, new_password })
   return data
+}
+
+
+export async function fetchRelationships(sessionUuid: string): Promise<Relationship[]> {
+  const { data } = await http.get<Relationship[]>(`/sessions/${sessionUuid}/relationships`)
+  return data
+}
+
+export async function createRelationship(sessionUuid: string, req: RelationshipCreate): Promise<Relationship> {
+  const { data } = await http.post<Relationship>(`/sessions/${sessionUuid}/relationships`, req)
+  return data
+}
+
+export async function deleteRelationship(sessionUuid: string, relId: string): Promise<void> {
+  await http.delete(`/sessions/${sessionUuid}/relationships/${relId}`)
 }

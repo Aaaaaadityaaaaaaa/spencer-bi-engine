@@ -802,6 +802,23 @@ async def undo(session_uuid: str, table_name: str) -> Tuple[int, int, int]:
         return version, hist["current"], row_count
 
 
+
+async def goto_step(session_uuid: str, table_name: str, target_index: int) -> Tuple[int, int, int]:
+    async with _lock_for(session_uuid, table_name):
+        hist = _get_history(session_uuid, table_name)
+        if target_index < 0 or target_index >= len(hist["entries"]):
+            raise TransformError(f"Invalid target step: {target_index}")
+        if hist["current"] == target_index:
+            raise TransformError("Already at target step")
+            
+        hist["current"] = target_index
+        state_id = hist["entries"][hist["current"]]["state_id"]
+        await _restore(table_name, _snap_name(table_name, state_id))
+        _set_history(session_uuid, table_name, hist)
+        version = redis_manager.incr_version(session_uuid)
+        row_count = (await db_manager.run_readwrite(f"SELECT COUNT(*) FROM {table_name}"))[0][0]
+        return version, hist["current"], row_count
+
 async def redo(session_uuid: str, table_name: str) -> Tuple[int, int, int]:
     async with _lock_for(session_uuid, table_name):
         hist = _get_history(session_uuid, table_name)

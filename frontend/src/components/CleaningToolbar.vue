@@ -18,13 +18,14 @@ import {
   Boxes,
   ArrowDownToLine,
   Flag,
+  PanelRightOpen,
 } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import type { OpKind, OpRequest } from '../types'
 import type { Component } from 'vue'
 
 const emit = defineEmits<{ open: [req: OpRequest] }>()
-const { sessionUuid } = useSession()
+const { sessionUuid, showAppliedSteps, toggleAppliedSteps } = useSession()
 
 interface RibbonButton {
   op: OpKind
@@ -76,16 +77,16 @@ function open(op: OpKind): void {
 </script>
 
 <template>
-  <div class="flex overflow-x-auto items-stretch gap-x-2 rounded-5 border border-outline-gray-2 bg-white px-2 py-2 shadow-sm relative z-10 transition-all hover:shadow-md hide-scrollbar">
+  <div class="flex flex-wrap items-stretch gap-2 rounded-md border border-outline-gray-2 bg-white px-2 py-2 shadow-sm relative z-10 transition-all hover:shadow-md ">
     <template v-for="(group, gi) in groups" :key="group.name">
-      <div v-if="gi > 0" class="mx-1 w-px shrink-0 self-stretch bg-gradient-to-b from-transparent via-outline-gray-2 to-transparent opacity-60"></div>
+      <div v-if="gi > 0" class="mx-2 w-[1.5px] shrink-0 self-stretch bg-gradient-to-b from-primary-2/30 via-primary-5/80 to-primary-2/30 shadow-[0_0_3px_#6366f1] opacity-100"></div>
       <div class="flex flex-col shrink-0">
         <div class="flex items-start gap-1">
           <button
             v-for="btn in group.buttons"
             :key="btn.op"
             type="button"
-            class="group flex flex-col items-center justify-start gap-1.5 rounded-3 px-2 py-2 w-20 text-center transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-surface-gray-2 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:bg-transparent disabled:hover:shadow-none"
+            class="group flex flex-col items-center justify-start gap-1.5 rounded-xl border border-primary-2 px-2 py-2 w-24 h-[4.5rem] text-center transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-surface-gray-2 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:bg-transparent disabled:hover:shadow-none"
             :disabled="!sessionUuid"
             :title="sessionUuid ? btn.label : 'Load a dataset first'"
             @click="open(btn.op)"
@@ -99,15 +100,19 @@ function open(op: OpKind): void {
         </div>
       </div>
     </template>
+
+    <div class="ml-auto flex shrink-0 items-center border-l-0 pl-0 mt-2 w-full justify-center sm:border-l sm:pl-2 sm:w-auto sm:mt-0 sm:justify-start border-outline-gray-2 pl-2">
+      <button 
+        @click="toggleAppliedSteps"
+        class="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-primary-2 px-3 py-2 w-20 h-[4.5rem] text-center transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-sm"
+        :class="showAppliedSteps ? 'text-primary bg-primary-1/50 hover:bg-primary-1' : 'text-ink-gray-5 hover:bg-surface-gray-2'"
+        title="Toggle Applied Steps"
+      >
+        <PanelRightOpen class="h-5 w-5 shrink-0 transition-colors" :class="showAppliedSteps ? 'text-primary' : 'group-hover:text-ink-gray-9'" />
+        <span class="text-[10px] font-semibold leading-tight" :class="showAppliedSteps ? 'text-primary' : 'text-ink-gray-7 group-hover:text-ink-gray-9'">Steps</span>
+      </button>
+    </div>
   </div>
 </template>
 
-<style scoped>
-.hide-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-.hide-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-</style>
+

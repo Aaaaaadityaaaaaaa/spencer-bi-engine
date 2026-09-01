@@ -355,7 +355,7 @@ function itemOpacity(key: AggregateKey): number {
     if (!d) return null
     const axisLabelStyle = { color: CHART_INK, fontFamily: props.config.fontFamily || CHART_FONT, fontSize: props.config.valueFontSize || 11 }
     const axisNameStyle = { color: CHART_INK, fontFamily: props.config.fontFamily || CHART_FONT, fontSize: (props.config.valueFontSize || 11) + 1, fontWeight: 600 }
-    const dataLabelStyle = { color: CHART_INK, fontFamily: props.config.fontFamily || CHART_FONT, fontSize: props.config.valueFontSize || 11 }
+    const dataLabelStyle = { color: CHART_INK, fontFamily: props.config.fontFamily || CHART_FONT, fontSize: (props.config.valueFontSize || 11) + 1, fontWeight: 700 }
     const t = props.config.chartType
     const showValues = props.config.showValues ?? false
     if (t === 'slicer') return null
@@ -394,7 +394,9 @@ function itemOpacity(key: AggregateKey): number {
   // labels so the title never overlaps them; kept modest so that under the cartesian grids'
   // `outerBoundsContain: 'axisLabel'` (TASK-041 #1) the title still lands inside the small
   // outer margin. On very dense (rotated) or flat category axes the title may sit tight.
-  const makeCategoryAxis = (labels: string[], flat = false, name?: string | null) => {
+  const makeCategoryAxis = (labels: string[], flat = false, name?: string | null, axisId: 'x' | 'y' = 'x') => {
+    const isBold = axisId === 'x' ? props.config.boldX : props.config.boldY
+    const fw = isBold ? 700 : undefined
     const rotate = !flat && labels.length > 8
     return {
       type: 'category' as const,
@@ -403,7 +405,7 @@ function itemOpacity(key: AggregateKey): number {
       nameLocation: 'middle' as const,
       nameGap: flat ? 44 : rotate ? 38 : 22,
       nameTextStyle: axisNameStyle,
-      axisLabel: { ...axisLabelStyle, rotate: rotate ? 35 : 0, hideOverlap: true },
+      axisLabel: { ...axisLabelStyle, fontWeight: fw, rotate: rotate ? 35 : 0, hideOverlap: true },
       axisTick: { show: false },
       axisLine: { lineStyle: { color: CHART_SPLIT_LINE } },
     }
@@ -414,17 +416,20 @@ function itemOpacity(key: AggregateKey): number {
   // on Y (nameRotate 90) — a wide *horizontal* Y-title (the TASK-038 default) is what had been
   // squeezing the numbers off small tiles under the old 'all' containment. hbar's value axis
   // sits on X, so it passes nameRotate 0 to keep that title horizontal below the axis.
-  const makeValueAxis = (name?: string | null, nameGap = 46, nameRotate = 90) => ({
+  const makeValueAxis = (name?: string | null, nameGap = 46, nameRotate = 90, axisId: 'x' | 'y' = 'y') => {
+    const isBold = axisId === 'x' ? props.config.boldX : props.config.boldY;
+    const fw = isBold ? 700 : undefined;
+    return {
     type: yScaleType,
     name: name || undefined,
     nameLocation: 'middle' as const,
     nameGap,
     nameRotate,
     nameTextStyle: axisNameStyle,
-    axisLabel: axisLabelStyle,
+    axisLabel: { ...axisLabelStyle, fontWeight: fw },
     axisLine: { show: false },
     splitLine: { show: showGrid, lineStyle: { color: CHART_SPLIT_LINE } },
-  })
+  }}
 
   // ---- Scatter (Wave 5) -----------------------------------------------------------
   // Raw (x, y) points from the backend. Optional `dimension` becomes a colour group;
@@ -466,8 +471,8 @@ function itemOpacity(key: AggregateKey): number {
           `${p.seriesName}: (${p.value[0]}, ${p.value[1]})`,
       },
       legend: entries.length > 1 ? legendOf({ type: 'scroll', top: 4, textStyle: axisLabelStyle }) : { show: false },
-      xAxis: makeValueAxis(props.config.xTitle ?? props.config.measure ?? 'x', 40, 0),
-      yAxis: makeValueAxis(props.config.yTitle ?? axisLabels.value.measureY ?? 'Y axis'),
+      xAxis: makeValueAxis(props.config.xTitle ?? props.config.measure ?? 'x', 40, 0, 'x'),
+      yAxis: makeValueAxis(props.config.yTitle ?? axisLabels.value.measureY ?? 'Y axis', 46, 90, 'y'),
       series,
     }
   }
@@ -511,7 +516,7 @@ function itemOpacity(key: AggregateKey): number {
           outerBoundsMode: 'same',
           outerBoundsContain: 'all',
         },
-        xAxis: { ...makeCategoryAxis(xlabels, false, props.config.dimension), splitArea: { show: true } },
+        xAxis: { ...makeCategoryAxis(xlabels, false, props.config.dimension, 'x'), splitArea: { show: true } },
         yAxis: {
           type: 'category' as const,
           data: slabels,
@@ -598,10 +603,8 @@ function itemOpacity(key: AggregateKey): number {
       },
       tooltip: { trigger: 'axis', axisPointer: { type: isBar ? 'shadow' : 'line' } },
       legend: legendOf({ type: 'scroll', top: 4, textStyle: axisLabelStyle }),
-      xAxis: makeCategoryAxis(xlabelsS, false, props.config.xTitle ?? props.config.dimension),
-      yAxis: makeValueAxis(
-        props.config.yTitle ?? (pct ? `${measureLabel.value} (%)` : measureLabel.value),
-      ),
+      xAxis: makeCategoryAxis(xlabelsS, false, props.config.xTitle ?? props.config.dimension, 'x'),
+      yAxis: makeValueAxis(props.config.yTitle ?? (pct ? `${measureLabel.value} (%)` : measureLabel.value), 46, 90, 'y'),
       series,
     }
   }
@@ -730,8 +733,8 @@ function itemOpacity(key: AggregateKey): number {
           return `${cats[p.dataIndex]}<br/>min ${fmtLabelValue(b.min)}<br/>Q1 ${fmtLabelValue(b.q1)}<br/>median ${fmtLabelValue(b.median)}<br/>Q3 ${fmtLabelValue(b.q3)}<br/>max ${fmtLabelValue(b.max)}`
         },
       },
-      xAxis: makeCategoryAxis(cats, false, props.config.dimension),
-      yAxis: makeValueAxis(measureLabel.value),
+      xAxis: makeCategoryAxis(cats, false, props.config.dimension, 'x'),
+      yAxis: makeValueAxis(measureLabel.value, 46, 90, 'y'),
       series: [
         {
           type: 'boxplot',
@@ -792,7 +795,7 @@ function itemOpacity(key: AggregateKey): number {
   const labelsS = order1.map((i) => labels[i])
   const valuesS = order1.map((i) => values[i])
 
-  const categoryAxis = makeCategoryAxis(labelsS, isHorizontal, props.config.xTitle ?? props.config.dimension)
+  const categoryAxis = makeCategoryAxis(labelsS, isHorizontal, props.config.xTitle ?? props.config.dimension, isHorizontal ? 'y' : 'x')
 
   // Per-bar opacity only when this tile owns the cross-filter (and only for bar/hbar —
   // a line/area with a single bright point would read as broken). Otherwise the series
@@ -927,9 +930,9 @@ function patch(p: Partial<ChartConfig>): void {
 // TASK-044: per-tile card chrome (border / corner radius / drop shadow) driven by config.
 const cardClass = computed(() => {
   const r = props.config.radius ?? 'md'
-  const radius = r === 'sm' ? 'rounded-3' : r === 'lg' ? 'rounded-6' : 'rounded-5'
-  const border = props.config.border === false ? 'border-0' : 'border border-outline-gray-1 shadow-sm'
-  const shadow = props.config.shadow === false ? '' : 'hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]'
+  const radius = r === 'none' ? 'rounded-none' : r === 'sm' ? 'rounded-3' : r === 'lg' ? 'rounded-6' : 'rounded-md'
+  const border = props.config.border === false ? 'border-0' : 'border-2 border-outline-gray-3'
+  const shadow = props.config.shadow === false ? '' : 'shadow-xl shadow-black/10 hover:shadow-2xl hover:shadow-black/15 hover:-translate-y-0.5 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]'
   return `group tile-drag-handle flex h-full flex-col overflow-hidden bg-surface-base ${radius} ${border} ${shadow}`
 })
 

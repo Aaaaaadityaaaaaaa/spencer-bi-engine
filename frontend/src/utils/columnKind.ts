@@ -55,7 +55,8 @@ export function categoricalColumns(columns: ColumnMeta[]): ColumnMeta[] {
 
 /** Columns usable as a group-by dimension: labels first, then time axes. */
 export function dimensionColumns(columns: ColumnMeta[]): ColumnMeta[] {
-  return [...categoricalColumns(columns), ...temporalColumns(columns)]
+  // Allow ANY column to be a dimension (Power BI style)
+  return columns
 }
 
 /** Look up a column's kind by name; unknown names read as categorical (safe default). */

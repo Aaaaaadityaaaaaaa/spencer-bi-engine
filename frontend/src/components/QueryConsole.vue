@@ -379,7 +379,7 @@ async function exportResults(): Promise<void> {
 </script>
 
 <template>
-  <div class="overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm">
+  <div class="overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm animate-fade-in-up">
     <div class="border-b border-outline-gray-1 bg-surface-gray-1 px-4 py-3">
       <h3 class="text-sm font-semibold text-ink-gray-8">Query Engine</h3>
       <p class="mt-0.5 text-xs text-ink-gray-5">

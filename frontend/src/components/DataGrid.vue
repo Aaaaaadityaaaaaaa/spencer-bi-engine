@@ -700,7 +700,7 @@ function cell(row: Record<string, unknown> | undefined, name: string): string {
 </script>
 
 <template>
-  <div class="flex flex-col overflow-hidden rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm">
+  <div class="flex flex-col overflow-hidden rounded-md border border-outline-gray-1 bg-surface-base shadow-sm">
     <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-4 py-3">
       <div class="flex items-center gap-2">
         <h3 class="text-sm font-semibold text-ink-gray-8">Data Grid</h3>

@@ -5,7 +5,7 @@ import {
   Table,
   BarChart3,
   Database,
-  CalendarClock,
+  Network,
   Settings,
   PanelLeft,
   PanelLeftClose,
@@ -135,13 +135,13 @@ watch(isAuthenticated, (authed) => {
 // Primary sections — real routes driven by vue-router.
 const navItems = [
   { label: 'Table', icon: Table, to: '/table' },
+  { label: 'Model', icon: Network, to: '/model' },
   { label: 'Canvas', icon: BarChart3, to: '/canvas' },
   { label: 'Query Engine', icon: Database, to: '/query' },
 ]
 
 // Roadmap surfaces — inert until their tasks land (kept visible so the plan stays legible).
 const futureItems = [
-  { label: 'Scheduled Runs', icon: CalendarClock },
   { label: 'Settings', icon: Settings },
 ]
 
@@ -355,13 +355,6 @@ const commands = computed<Command[]>(() => [
     </main>
 
     <!-- Tile Drawer -->
-    <Transition name="fade">
-      <div
-        v-if="selectedTile"
-        class="js-export-exclude fixed inset-0 z-40 bg-transparent"
-        @click="closeTileDrawer()"
-      ></div>
-    </Transition>
     <aside
       class="js-export-exclude fixed top-0 z-50 flex h-full w-80 max-w-[90vw] flex-col border-l border-outline-gray-2 bg-surface-base shadow-2xl transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
       :class="selectedTile ? 'right-0' : '-right-80'"

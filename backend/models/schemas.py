@@ -237,6 +237,18 @@ TransformParam = Annotated[
     Field(discriminator="op"),
 ]
 
+
+class RelationshipCreate(BaseModel):
+    from_table: str = Field(..., max_length=255)
+    from_column: str = Field(..., max_length=255)
+    to_table: str = Field(..., max_length=255)
+    to_column: str = Field(..., max_length=255)
+    join_type: Literal["inner", "left", "right", "full"] = "inner"
+
+class RelationshipResponse(RelationshipCreate):
+    id: str
+    session_uuid: str
+
 class TransformResponse(BaseModel):
     schema_version: int
     step: int

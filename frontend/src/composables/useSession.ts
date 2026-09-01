@@ -14,6 +14,7 @@ import {
   applyTransform,
   undoTransform,
   redoTransform,
+  gotoTransformStep,
   fetchHistory,
   fetchSchema,
   fetchData,
@@ -43,6 +44,8 @@ interface SessionState {
   canUndo: boolean
   canRedo: boolean
   historySteps: HistoryStep[]
+  currentStepIndex: number
+  showAppliedSteps: boolean
 }
 
 const state = reactive<SessionState>({
@@ -60,6 +63,8 @@ const state = reactive<SessionState>({
   canUndo: false,
   canRedo: false,
   historySteps: [],
+  currentStepIndex: -1,
+  showAppliedSteps: true,
 })
 
 // --- Session persistence across page reloads --------------------------------
@@ -193,6 +198,7 @@ async function refreshHistory(): Promise<void> {
     state.canUndo = h.can_undo
     state.canRedo = h.can_redo
     state.historySteps = h.steps
+    state.currentStepIndex = h.current_step_index
   } catch {
     // History is advisory (drives button enablement); ignore transient failures.
   }
@@ -284,6 +290,26 @@ async function undo(): Promise<void> {
   }
 }
 
+
+async function gotoStep(index: number): Promise<void> {
+  const uuid = state.sessionUuid
+  if (!uuid || state.applying) return
+  if (index === state.currentStepIndex) return
+  if (index < 0 || index >= state.historySteps.length) return
+
+  state.applying = true
+  state.error = null
+  try {
+    const resp = await gotoTransformStep(uuid, index, state.tableName ?? undefined)
+    state.dataVersion = resp.schema_version
+    await syncAfterMutation(resp.row_count)
+  } catch (e) {
+    state.error = apiErrorMessage(e)
+  } finally {
+    state.applying = false
+  }
+}
+
 async function redo(): Promise<void> {
   const uuid = state.sessionUuid
   if (!uuid || state.applying || !state.canRedo) return
@@ -365,6 +391,10 @@ async function restoreSession(): Promise<void> {
 // ChartCanvas re-run every tile, so a table *switch* must not silently re-point
 // existing charts. The grid reloads via its own watch(tableName); Canvas/Query read
 // the new `columns` reactively for any NEW tiles/queries.
+function toggleAppliedSteps() {
+  state.showAppliedSteps = !state.showAppliedSteps
+}
+
 function setActiveTable(name: string): void {
   if (!state.sessionUuid || name === state.tableName) return
   const t = state.tables.find((x) => x.table_name === name)
@@ -481,6 +511,8 @@ export function useSession() {
     updateCell,
     undo,
     redo,
+    toggleAppliedSteps,
+    gotoStep,
     refreshHistory,
     resetSession,
     restoreSession,

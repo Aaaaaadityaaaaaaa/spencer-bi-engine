@@ -612,6 +612,7 @@ class AIService:
         question: str,
         schema: Dict[str, Any],
         bizdict: Dict[str, Any],
+        relationships: List[Dict[str, Any]] = None,
         attempt: int = 0,
     ) -> str:
         """Single-attempt shim kept for the documented signature (ARCHITECTURE.md).

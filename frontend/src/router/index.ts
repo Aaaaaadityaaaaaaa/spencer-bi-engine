@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import TableView from '../views/TableView.vue'
+import ModelView from '../views/ModelView.vue'
+
 import CanvasView from '../views/CanvasView.vue'
 import QueryEngineView from '../views/QueryEngineView.vue'
 import AuthView from '../views/AuthView.vue'
@@ -19,6 +21,13 @@ declare module 'vue-router' {
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+
+    {
+      path: '/model',
+      name: 'model',
+      component: ModelView,
+      meta: { title: 'Spencer BI | Model', requiresAuth: true }
+    },
     { path: '/', redirect: '/table' },
     { path: '/login', name: 'login', component: AuthView, meta: { title: 'Sign in', public: true } },
     { path: '/table', name: 'table', component: TableView, meta: { title: 'Table' } },

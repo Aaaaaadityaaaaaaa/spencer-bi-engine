@@ -248,7 +248,7 @@ function onFixAlt(f: QualityFinding): void {
 </script>
 
 <template>
-  <section class="rounded-5 border border-outline-gray-1 bg-surface-base shadow-sm">
+  <section class="rounded-md border border-outline-gray-1 bg-surface-base shadow-sm">
     <!-- Header: click to expand/collapse. Always carries a one-line status summary. -->
     <button
       type="button"

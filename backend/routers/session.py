@@ -2,7 +2,7 @@ import uuid
 import os
 import re
 import csv
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -17,7 +17,9 @@ from models.schemas import (
     TransformResponse,
     TransformPreviewResponse,
     HistoryResponse,
-    ColumnSchema
+    ColumnSchema,
+    RelationshipCreate,
+    RelationshipResponse
 )
 from deps import get_current_user, get_db, require_session_owner
 from services.app_db import Dataset, User
@@ -272,6 +274,39 @@ async def create_session(
         columns=columns
     )
 
+
+@router.get("/{session_uuid}/relationships", response_model=List[RelationshipResponse], dependencies=[Depends(require_session_owner)])
+def get_relationships(session_uuid: str):
+    rels = redis_manager.get_json(f"relationships:{session_uuid}") or []
+    return rels
+
+@router.post("/{session_uuid}/relationships", response_model=RelationshipResponse, dependencies=[Depends(require_session_owner)])
+def create_relationship(session_uuid: str, req: RelationshipCreate):
+    schema = redis_manager.get_json(f"schema:{session_uuid}") or {}
+    
+    if req.from_table not in schema or req.to_table not in schema:
+        raise HTTPException(status_code=400, detail="One or both tables do not exist in session.")
+        
+    import uuid
+    new_rel = req.model_dump()
+    new_rel["id"] = str(uuid.uuid4())
+    new_rel["session_uuid"] = session_uuid
+    
+    rels = redis_manager.get_json(f"relationships:{session_uuid}") or []
+    rels.append(new_rel)
+    redis_manager.set_json(f"relationships:{session_uuid}", rels, ttl=86400 * 7)
+    return new_rel
+
+@router.delete("/{session_uuid}/relationships/{rel_id}", dependencies=[Depends(require_session_owner)])
+def delete_relationship(session_uuid: str, rel_id: str):
+    rels = redis_manager.get_json(f"relationships:{session_uuid}") or []
+    initial_len = len(rels)
+    rels = [r for r in rels if r["id"] != rel_id]
+    if len(rels) == initial_len:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    redis_manager.set_json(f"relationships:{session_uuid}", rels, ttl=86400 * 7)
+    return {"status": "ok"}
+
 @router.post("/{session_uuid}/tables", response_model=TableUploadResponse, dependencies=[Depends(require_session_owner)])
 async def upload_table(session_uuid: str, file: UploadFile = File(...)):
     _reject_disallowed_type(file.filename)
@@ -420,6 +455,14 @@ async def delete_table(session_uuid: str, table_name: str):
     # Prevent dropping the primary table if it's the only one (optional safety, or just let them)
     # Actually, if they drop the primary table, they can just upload a new one.
 
+
+    # Cascade delete relationships involving this table
+    rels = redis_manager.get_json(f"relationships:{session_uuid}") or []
+    initial_len = len(rels)
+    rels = [r for r in rels if r["from_table"] != table_name and r["to_table"] != table_name]
+    if len(rels) < initial_len:
+        redis_manager.set_json(f"relationships:{session_uuid}", rels, ttl=86400 * 7)
+
     # Drop from DuckDB
     try:
         await db_manager.run_readwrite(f"DROP TABLE IF EXISTS {table_name}")
@@ -504,6 +547,19 @@ async def redo_transform(session_uuid: str, table_name: Optional[str] = None):
     tname = _resolve_table(session_uuid, table_name)
     try:
         version, step, row_count = await transform_service.redo(session_uuid, tname)
+    except transform_service.TransformError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    schema = redis_manager.get_json(f"schema:{session_uuid}") or {}
+    is_primary = schema.get(tname, {}).get("is_primary", False)
+    await refresh_table_schema_cache(session_uuid, tname, is_primary)
+    return TransformResponse(schema_version=version, step=step, row_count=row_count)
+
+
+@router.post("/{session_uuid}/history/goto/{step_index}", response_model=TransformResponse, dependencies=[Depends(require_session_owner)])
+async def goto_transform_step(session_uuid: str, step_index: int, table_name: Optional[str] = None):
+    tname = _resolve_table(session_uuid, table_name)
+    try:
+        version, step, row_count = await transform_service.goto_step(session_uuid, tname, step_index)
     except transform_service.TransformError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     schema = redis_manager.get_json(f"schema:{session_uuid}") or {}
