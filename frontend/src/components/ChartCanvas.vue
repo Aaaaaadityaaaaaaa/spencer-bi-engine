@@ -15,6 +15,7 @@
 // are useDashboards' job, wired into the header here (TASK-035).
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { GridLayout, GridItem } from 'grid-layout-plus'
+import ErrorBoundary from './ErrorBoundary.vue'
 import { AlertCircle, BookMarked, FileDown, Filter, ImageDown, LayoutDashboard, Loader2, Maximize, Pencil, Plus, RefreshCw, Save, Settings, Sparkles, Trash2, X } from '@lucide/vue'
 import { toPng } from 'html-to-image'
 import { jsPDF } from 'jspdf'
@@ -808,7 +809,7 @@ function focusOnMount(el: unknown): void {
 }
 
 // --- #15 named Save/Load slots (TASK-035) ----------------------------------------
-const { dashboards, saveDashboard, loadDashboard, renameDashboard, deleteDashboard, loadFromServer } = useDashboards()
+const { dashboards, saveDashboard, loadDashboard, renameDashboard, deleteDashboard } = useDashboards()
 const { pushToast } = useToasts()
 const savedOpen = ref(false)
 const savedPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -857,7 +858,7 @@ function loadSavedDashboard(id: number): void {
   pushToast('Loaded "' + (loaded?.name ?? 'dashboard') + '"', 'success')
 }
 
-function startRenameSaved(id: string, name: string): void {
+function startRenameSaved(id: number, name: string): void {
   renamingSavedId.value = id
   savedNameDraft.value = name
 }
@@ -868,7 +869,7 @@ function confirmRenameSaved(): void {
 
 // Delete a named slot and confirm with a toast (Batch 9 — consistent action feedback,
 // matching the toast the app shows for transforms, logins and uploads).
-function removeSaved(d: { id: string; name: string }): void {
+function removeSaved(d: { id: number; name: string }): void {
   deleteDashboard(d.id)
   pushToast('Deleted "' + d.name + '"', 'info')
 }
@@ -1354,6 +1355,7 @@ onBeforeUnmount(() => {
         drag-allow-from=".tile-drag-handle"
         drag-ignore-from="button, select, input, textarea, a, summary, canvas, .no-drag, .vgl-item__resizer"
       >
+        <ErrorBoundary>
         <KpiCard
           v-if="kpiByTile(item.i)"
           class="tile-enter"
@@ -1387,6 +1389,7 @@ onBeforeUnmount(() => {
           @duplicate="onChartDuplicate(chartByTile(item.i)!.id)"
           @open-settings="openTileSettings('chart', chartByTile(item.i)!.id)"
         />
+        </ErrorBoundary>
       </GridItem>
     </GridLayout>
 

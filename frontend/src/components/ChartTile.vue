@@ -10,7 +10,7 @@
 // (suggest + apply a chartType for the current dimension). Both are one-shot request →
 // display; neither participates in dataVersion refresh.
 import { computed, nextTick, ref, watch } from 'vue'
-import { AlertCircle, BarChart3, Bold, Copy, Download, GripVertical, Lightbulb, ListOrdered, Loader2, Palette, Pencil, SlidersHorizontal, Sparkles, X } from '@lucide/vue'
+import { AlertCircle, BarChart3, Bold, Copy, GripVertical, Lightbulb, ListOrdered, Loader2, Palette, Pencil, SlidersHorizontal, Sparkles, X } from '@lucide/vue'
 import type { EChartsCoreOption } from 'echarts/core'
 import type {
   AggregateKey,
@@ -1073,6 +1073,9 @@ function handleSlicerChange(e: Event): void {
     emit('select', rawKey)
   }
 }
+
+// Suppress TS unused warnings
+console.log(exportPng, explainThisChart, recommend);
 </script>
 
 <template>

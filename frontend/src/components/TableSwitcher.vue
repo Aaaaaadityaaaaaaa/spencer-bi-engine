@@ -5,7 +5,7 @@
 // table with addTable(). Lives in App.vue so it is reachable from every tab; it only
 // renders once a session has at least one table. Styling matches the App shell.
 import { ref, watch, onMounted } from 'vue'
-import { Plus, Database, X, Star, Palette } from '@lucide/vue'
+import { Plus, Database, X, Star } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import { useAuth } from '../composables/useAuth'
 import { displayTableName } from '../utils/tableName'

@@ -54,6 +54,9 @@ _CALLS_TTL_SECONDS = 2 * 24 * 3600
 _PROVIDER_ENV: Dict[str, Tuple[str, str]] = {
     "gemini": ("GEMINI_API_KEYS", "GEMINI_API_KEY"),
     "anthropic": ("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY"),
+    "openai": ("OPENAI_API_KEYS", "OPENAI_API_KEY"),
+    "groq": ("GROQ_API_KEYS", "GROQ_API_KEY"),
+    "cohere": ("COHERE_API_KEYS", "COHERE_API_KEY"),
 }
 
 

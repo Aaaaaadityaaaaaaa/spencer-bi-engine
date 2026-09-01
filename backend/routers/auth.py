@@ -4,7 +4,7 @@ session guard -- these mint / read identity rather than touching a dataset.
 lock down self-serve signup, and tests can monkeypatch it)."""
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 import config
@@ -17,6 +17,12 @@ router = APIRouter()
 logger = logging.getLogger("spencer.auth.router")
 
 
+def check_rate_limit(request: Request, action: str = "auth", limit: int = 5, window: int = 60):
+    ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+    if not redis_manager.rate_limit(f"{action}:{ip}", limit=limit, window=window):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
+
 def _user_response(user: User) -> UserResponse:
     return UserResponse(
         id=user.id,
@@ -27,7 +33,8 @@ def _user_response(user: User) -> UserResponse:
 
 
 @router.post("/register", response_model=TokenResponse)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    check_rate_limit(request, 'register', 3, 3600)
     if not config.ALLOW_REGISTRATION:
         raise HTTPException(status_code=403, detail="Registration is disabled on this deployment")
     try:
@@ -40,7 +47,8 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenRe
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    check_rate_limit(request, 'login', 5, 60)
     try:
         user = auth_service.authenticate(db, payload.email, payload.password)
     except auth_service.AuthError as exc:
@@ -59,7 +67,8 @@ redis_manager = RedisManager()
 import uuid
 
 @router.post("/forgot-password")
-def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    check_rate_limit(request, 'forgot', 3, 600)
     user = auth_service.get_user_by_email(db, payload.email)
     if user:
         reset_token = str(uuid.uuid4())
@@ -75,7 +84,8 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     return {"status": "ok", "message": "If that email is registered, a reset link was sent."}
 
 @router.post("/reset-password")
-def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    check_rate_limit(request, 'reset', 5, 600)
     
     reset_data = redis_manager.get_json(f"reset:{payload.token}")
     user_id_str = reset_data["user_id"] if reset_data else None

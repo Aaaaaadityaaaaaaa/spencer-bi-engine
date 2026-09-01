@@ -21,7 +21,7 @@ from models.schemas import (
 )
 from deps import get_current_user, get_db, require_session_owner
 from services.app_db import Dataset, User
-from services.duckdb_manager import db_manager
+from services.duckdb_manager import db_manager, current_session_id
 from services.redis_manager import redis_manager
 from services.sql_validator import sql_validator
 from services import cleanup_service, ownership_service, transform_service
@@ -248,6 +248,7 @@ async def create_session(
     db: Session = Depends(get_db),
 ):
     session_uuid = str(uuid.uuid4())
+    current_session_id.set(session_uuid)
     _reject_disallowed_type(file.filename)
     table_name, clean_name = _table_name_for(session_uuid, file.filename)
     # Mark the session live BEFORE persisting so the marker always exists before

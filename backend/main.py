@@ -93,6 +93,20 @@ app.add_middleware(
 )
 
 # Auth routes mint / read identity -> mounted WITHOUT a session guard.
+import re
+from services.duckdb_manager import current_session_id
+
+@app.middleware("http")
+async def extract_session_context(request: Request, call_next):
+    # Set the ContextVar for DuckDB if this is a session route
+    m = re.match(r"^/sessions/([a-f0-9\-]{36})", request.url.path)
+    if m:
+        current_session_id.set(m.group(1))
+    else:
+        # Clear it just in case
+        current_session_id.set(None)
+    return await call_next(request)
+
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(dashboard.router)
 

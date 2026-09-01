@@ -448,7 +448,7 @@ class AIService:
         except Exception as exc:  # pragma: no cover - defensive
             raise LLMAPIError(f"Unexpected LLM response shape: {exc}") from exc
 
-    async def _call_llm(self, model: str, system: str, user: str) -> str:
+    async def _call_model_with_pool(self, model: str, system: str, user: str) -> str:
         """One logical LLM completion, transparently rotated across the provider's key
         pool (TASK-024).
 
@@ -506,6 +506,49 @@ class AIService:
             f"Try again in ~{wait}s.",
             retry_after=wait,
         )
+
+    async def _call_llm(self, primary_model: str, system: str, user: str) -> str:
+        """Entrypoint for LLM completions with fallback chain support.
+        
+        Attempts the primary model (with key rotation via _call_model_with_pool).
+        If exhausted or failed, gracefully moves to models in SPENCER_LLM_FALLBACK_MODELS.
+        """
+        models = [primary_model]
+        fallbacks = os.environ.get("SPENCER_LLM_FALLBACK_MODELS", "")
+        if fallbacks:
+            models.extend([m.strip() for m in fallbacks.split(",") if m.strip()])
+
+        last_err = None
+        soonest = None
+        
+        for model in models:
+            try:
+                return await self._call_model_with_pool(model, system, user)
+            except LLMConfigError as e:
+                last_err = e
+                logger.warning("llm fallback: model '%s' misconfigured or missing litellm (%s), trying next", model, e)
+                continue
+            except LLMRateLimitError as e:
+                last_err = e
+                # Fallback on rate limit
+                soonest = e.retry_after if soonest is None else min(soonest, e.retry_after)
+                logger.warning("llm fallback: model '%s' rate-limited, trying next", model)
+                continue
+            except LLMAPIError as e:
+                last_err = e
+                # Fallback on transport/auth error
+                logger.warning("llm fallback: model '%s' API error (%s), trying next", model, e)
+                continue
+
+        if isinstance(last_err, LLMRateLimitError):
+            raise LLMRateLimitError(
+                "All AI models in the fallback chain are exhausted or rate-limited.",
+                retry_after=soonest or 60,
+            )
+        if last_err:
+            raise last_err
+            
+        raise LLMConfigError("No valid LLM models configured in the fallback chain.")
 
     async def resolve_sql(
         self,

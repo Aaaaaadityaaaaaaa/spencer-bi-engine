@@ -180,6 +180,15 @@ class RedisManager:
         ]
         return int(self.client.delete(*keys))
 
+    def rate_limit(self, key: str, limit: int, window: int) -> bool:
+        """Returns True if allowed, False if rate limited.
+        Implements a simple fixed-window counter using Redis."""
+        redis_key = f"rate:{key}"
+        current = self.client.incr(redis_key)
+        if current == 1:
+            self.client.expire(redis_key, window)
+        return current <= limit
+
     def pin_schema(self, session_uuid: str, schedule_id: str):
         # Phase 7 (scheduling) -- pins a schema version to a scheduled job so a
         # later run resolves against the same schema. Not part of Phase 6.

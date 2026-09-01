@@ -1,0 +1,16 @@
+product,category,region,sales,cost,qty,date
+Laptop,Electronics,APAC,1200,800,5,2024-01-15
+Phone,Electronics,EMEA,800,400,12,2024-01-20
+Desk,Furniture,NAM,350,200,3,2024-02-10
+Chair,Furniture,APAC,150,80,8,2024-02-15
+Monitor,Electronics,NAM,500,300,6,2024-03-01
+Keyboard,Electronics,EMEA,50,20,25,2024-03-10
+Sofa,Furniture,APAC,900,500,2,2024-03-15
+Tablet,Electronics,NAM,600,350,10,2024-04-01
+Bookshelf,Furniture,EMEA,200,120,4,2024-04-10
+Headphones,Electronics,APAC,100,40,30,2024-04-15
+Lamp,Furniture,NAM,45,20,15,2024-05-01
+Camera,Electronics,EMEA,1100,700,3,2024-05-10
+Table,Furniture,APAC,400,250,5,2024-05-15
+Speaker,Electronics,NAM,200,100,20,2024-06-01
+Wardrobe,Furniture,EMEA,600,350,2,2024-06-10
