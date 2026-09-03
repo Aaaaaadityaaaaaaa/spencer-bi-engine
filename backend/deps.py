@@ -15,7 +15,7 @@ same request (one Session, not two).
 import logging
 from typing import Iterator, Optional
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 import config
@@ -38,10 +38,13 @@ def get_db() -> Iterator[Session]:
 
 def get_current_user(
     authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ) -> User:
     """Resolve the bearer token to a User or raise 401. Accepts
-    ``Authorization: Bearer <token>`` (scheme match is case-insensitive)."""
+    ``Authorization: Bearer <token>`` or ``?token=<token>``."""
+    if not authorization and token:
+        authorization = f"Bearer {token}"
     if not authorization:
         raise HTTPException(status_code=401, detail="Not authenticated", headers=_UNAUTH)
     parts = authorization.split(None, 1)

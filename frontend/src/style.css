@@ -77,12 +77,12 @@
     @apply inline-flex items-center gap-2 justify-center rounded-3 px-3 py-1.5 text-sm font-semibold transition-all duration-300 ease-out border border-transparent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none;
   }
   .btn-ghost {
-    @apply text-ink-gray-7 bg-white border-outline-gray-2 shadow-sm hover:bg-surface-gray-2 hover:text-ink-gray-9 hover:-translate-y-0.5 hover:shadow-md;
+    @apply text-ink-gray-7 bg-surface-base border-outline-gray-2 shadow-sm hover:bg-surface-gray-2 hover:text-ink-gray-9 hover:-translate-y-0.5 hover:shadow-md;
   }
   .btn-primary {
     @apply bg-primary-6 text-white shadow-sm hover:bg-primary-7 hover:-translate-y-0.5 hover:shadow-md;
   }
   .btn-dashed {
-    @apply border-dashed border-outline-gray-3 text-ink-gray-6 bg-transparent hover:border-primary-5 hover:text-primary-6 hover:-translate-y-0.5 hover:shadow-sm hover:bg-white;
+    @apply border-dashed border-outline-gray-3 text-ink-gray-6 bg-transparent hover:border-primary-5 hover:text-primary-6 hover:-translate-y-0.5 hover:shadow-sm hover:bg-surface-base;
   }
 }

@@ -4,7 +4,7 @@
 // at a different already-loaded table via setActiveTable(), plus add a new secondary
 // table with addTable(). Lives in App.vue so it is reachable from every tab; it only
 // renders once a session has at least one table. Styling matches the App shell.
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { Plus, Database, X, Star } from '@lucide/vue'
 import { useSession } from '../composables/useSession'
 import { useAuth } from '../composables/useAuth'
@@ -17,23 +17,37 @@ const fileInput = ref<HTMLInputElement | null>(null)
 // Global Theme Color state
 const appThemeColor = ref('#83bfc8')
 
-onMounted(() => {
-  if (user.value?.email) {
-    const saved = localStorage.getItem(`spencer_theme_${user.value.email}`)
-    if (saved) {
-      appThemeColor.value = saved
-      document.documentElement.style.setProperty('--primary-5', saved)
-    }
+function loadThemeColor() {
+  if (!user.value?.email) return
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+  const key = `spencer_theme_${isDark ? 'dark_' : ''}${user.value.email}`
+  const saved = localStorage.getItem(key)
+  if (saved) {
+    appThemeColor.value = saved
+  } else {
+    // Default to white in dark mode, teal in light mode
+    appThemeColor.value = isDark ? '#ffffff' : '#83bfc8'
   }
+  document.documentElement.style.setProperty('--primary-5', appThemeColor.value)
+}
+
+onMounted(() => {
+  loadThemeColor()
+  window.addEventListener('theme-changed', loadThemeColor)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('theme-changed', loadThemeColor)
 })
 
 watch(appThemeColor, (newColor) => {
   document.documentElement.style.setProperty('--primary-5', newColor)
   if (user.value?.email) {
-    localStorage.setItem(`spencer_theme_${user.value.email}`, newColor)
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+    const key = `spencer_theme_${isDark ? 'dark_' : ''}${user.value.email}`
+    localStorage.setItem(key, newColor)
   }
 })
-
 // Show the original upload name, not the long t_<uuid>_ physical name (backend still
 // resolves it on query). The tooltip keeps the real physical name for reference.
 function label(t: { table_name: string }): string {
@@ -60,7 +74,7 @@ function onFile(e: Event): void {
     class="flex shrink-0 items-center justify-between overflow-x-auto border-b border-outline-gray-1 bg-surface-gray-2/50 px-6 py-3"
   >
     <div class="flex items-center gap-4">
-      <div class="flex items-center gap-1.5 rounded-full bg-white px-3 py-1 shadow-sm ring-1 ring-outline-gray-2/60">
+      <div class="flex items-center gap-1.5 rounded-full bg-surface-base px-3 py-1 shadow-sm ring-1 ring-outline-gray-2/60">
         <Database class="h-3.5 w-3.5 text-primary-5" />
         <span class="text-xs font-semibold uppercase tracking-wider text-ink-gray-5">Datasets</span>
       </div>
@@ -71,7 +85,7 @@ function onFile(e: Event): void {
           v-for="t in tables"
           :key="t.table_name"
           class="group relative flex shrink-0 items-center rounded-2 transition-all duration-300"
-          :class="t.table_name === tableName ? 'bg-white shadow-sm ring-1 ring-outline-gray-2/50 text-primary-7' : 'text-ink-gray-6 hover:bg-white/50 hover:text-ink-gray-8'"
+          :class="t.table_name === tableName ? 'bg-surface-base shadow-sm ring-1 ring-outline-gray-2/50 text-primary-7' : 'text-ink-gray-6 hover:bg-surface-base/50 hover:text-ink-gray-8'"
         >
           <button
             type="button"
@@ -109,7 +123,7 @@ function onFile(e: Event): void {
 
     <div class="flex items-center gap-2">
       <!-- Theme Color Picker Pill -->
-      <div class="group relative flex items-center gap-1.5 rounded-full bg-white px-2 py-1 shadow-sm ring-1 ring-outline-gray-2/60 transition-all hover:bg-surface-gray-1 hover:shadow" title="Change Theme Color">
+      <div class="group relative flex items-center gap-1.5 rounded-full bg-surface-base px-2 py-1 shadow-sm ring-1 ring-outline-gray-2/60 transition-all hover:bg-surface-gray-1 hover:shadow" title="Change Theme Color">
         <input type="color" v-model="appThemeColor" class="absolute inset-0 h-full w-full cursor-pointer opacity-0 z-10" />
         <div class="h-3.5 w-3.5 rounded-full shadow-inner ring-1 ring-black/10" :style="{ backgroundColor: appThemeColor }"></div>
         <span class="text-xs font-semibold uppercase tracking-wider text-ink-gray-6 group-hover:text-ink-gray-8">{{ appThemeColor.replace('#', '') }}</span>
@@ -118,7 +132,7 @@ function onFile(e: Event): void {
       <button
         type="button"
         :disabled="uploading"
-        class="inline-flex shrink-0 items-center gap-1.5 rounded-3 bg-white px-3 py-1.5 text-sm font-medium text-ink-gray-7 shadow-sm ring-1 ring-outline-gray-2/60 transition-all hover:bg-surface-gray-1 hover:text-ink-gray-9 hover:shadow disabled:cursor-not-allowed disabled:text-ink-gray-4 disabled:opacity-70"
+        class="inline-flex shrink-0 items-center gap-1.5 rounded-3 bg-surface-base px-3 py-1.5 text-sm font-medium text-ink-gray-7 shadow-sm ring-1 ring-outline-gray-2/60 transition-all hover:bg-surface-gray-1 hover:text-ink-gray-9 hover:shadow disabled:cursor-not-allowed disabled:text-ink-gray-4 disabled:opacity-70"
         title="Add another table to this session"
         @click="triggerAdd"
       >

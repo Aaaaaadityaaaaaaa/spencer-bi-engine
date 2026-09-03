@@ -436,14 +436,12 @@ export function streamQueryProgress(
   onProgress: (elapsedMs: number) => void,
 ): Promise<ExecuteResultResponse> {
   return new Promise((resolve, reject) => {
-    // Determine ws:// or wss:// from current location (or import.meta.env)
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = import.meta.env.VITE_API_URL 
-      ? new URL(import.meta.env.VITE_API_URL).host 
-      : window.location.host;
-    
-    // Support the local proxy in dev or direct connection
-    const wsUrl = `${protocol}//${host}/api/sessions/${sessionUuid}/queries/${queryId}/ws`;
+    const base = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+    let wsUrl = base.replace(/^http/, 'ws') + `/sessions/${sessionUuid}/queries/${queryId}/ws`;
+      const rawAuth = localStorage.getItem('spencer.auth.v1');
+      const token = rawAuth ? (JSON.parse(rawAuth).token || '') : '';
+      const qs = token ? '?token=' + encodeURIComponent(token) : '';
+      wsUrl = wsUrl + qs;
     const ws = new WebSocket(wsUrl);
 
     ws.onmessage = (event) => {
@@ -593,4 +591,24 @@ export async function createRelationship(sessionUuid: string, req: RelationshipC
 
 export async function deleteRelationship(sessionUuid: string, relId: string): Promise<void> {
   await http.delete(`/sessions/${sessionUuid}/relationships/${relId}`)
+}
+
+export async function runAdminSweep(): Promise<any> {
+  const { data } = await http.post('/admin/sweep')
+  return data
+}
+
+export async function fetchAdminStorage(): Promise<any> {
+  const { data } = await http.get('/admin/storage')
+  return data
+}
+
+export async function fetchAiConfig(): Promise<any> {
+  const { data } = await http.get('/admin/ai-config')
+  return data
+}
+
+export async function changePassword(payload: any): Promise<any> {
+  const { data } = await http.post('/auth/change-password', payload)
+  return data
 }

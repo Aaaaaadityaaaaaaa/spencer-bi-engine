@@ -77,9 +77,9 @@ function open(op: OpKind): void {
 </script>
 
 <template>
-  <div class="flex flex-wrap items-stretch gap-2 rounded-md border border-outline-gray-2 bg-white px-2 py-2 shadow-sm relative z-10 transition-all hover:shadow-md ">
+  <div class="flex flex-wrap items-stretch gap-2 rounded-md border border-outline-gray-2 bg-surface-base px-2 py-2 shadow-sm relative z-10 transition-all hover:shadow-md ">
     <template v-for="(group, gi) in groups" :key="group.name">
-      <div v-if="gi > 0" class="mx-2 w-[1.5px] shrink-0 self-stretch bg-gradient-to-b from-primary-2/30 via-primary-5/80 to-primary-2/30 shadow-[0_0_3px_#6366f1] opacity-100"></div>
+      <div v-if="gi > 0" class="mx-2 w-px shrink-0 self-stretch bg-gradient-to-b from-transparent via-primary-5/50 to-transparent shadow-[0_0_1px_var(--primary-5)] opacity-70"></div>
       <div class="flex flex-col shrink-0">
         <div class="flex items-start gap-1">
           <button

@@ -18,6 +18,8 @@ export interface DashboardSettings {
   compact: boolean
   /** Single-series / card accent applied to all visuals that have no explicit colour. null = brand default. */
   accent: string | null
+  /** The default categorical palette for charts. */
+  paletteId: string | null
   /** Default "show values on chart" for new charts (and what "Apply to all" pushes). */
   showValues: boolean
 }
@@ -30,7 +32,7 @@ function clampInt(n: unknown, lo: number, hi: number, fallback: number): number 
 }
 
 function load(): DashboardSettings {
-  const fallback: DashboardSettings = { decimalPlaces: 0, thousands: true, compact: false, accent: null, showValues: false }
+  const fallback: DashboardSettings = { decimalPlaces: 0, thousands: true, compact: false, accent: null, showValues: false, paletteId: null }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return fallback
@@ -41,6 +43,7 @@ function load(): DashboardSettings {
       compact: typeof p.compact === 'boolean' ? p.compact : fallback.compact,
       accent: typeof p.accent === 'string' && p.accent ? p.accent : null,
       showValues: typeof p.showValues === 'boolean' ? p.showValues : fallback.showValues,
+      paletteId: typeof p.paletteId === 'string' && p.paletteId ? p.paletteId : null,
     }
   } catch {
     return fallback
@@ -122,6 +125,7 @@ export function resetDashboardSettings(): void {
   dashboardSettings.compact = false
   dashboardSettings.accent = null
   dashboardSettings.showValues = false
+  dashboardSettings.paletteId = null
 }
 
 export function useDashboardSettings() {

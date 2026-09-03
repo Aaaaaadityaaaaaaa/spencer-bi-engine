@@ -1060,9 +1060,9 @@ watch(
 const sectionCls = 'border-b border-outline-gray-1 last:border-b-0'
 const summaryCls = 'cursor-pointer px-4 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-gray-9 hover:bg-surface-gray-1 transition-colors select-none marker:text-primary-5'
 const sectionBodyCls = 'px-4 pb-4 pt-1 flex flex-col gap-3.5'
-const selectCls = 'w-full rounded-3 border border-outline-gray-2 bg-white px-2.5 py-1.5 text-xs font-medium text-ink-gray-8 shadow-sm transition-all hover:border-primary-4 focus:border-primary-5 focus:outline-none focus:ring-1 focus:ring-primary-5'
+const selectCls = 'w-full rounded-3 border border-outline-gray-2 bg-surface-base px-2.5 py-1.5 text-xs font-medium text-ink-gray-8 shadow-sm transition-all hover:border-primary-4 focus:border-primary-5 focus:outline-none focus:ring-1 focus:ring-primary-5'
 const labelCls = 'mb-1.5 block text-[11px] font-semibold text-ink-gray-5 uppercase tracking-wide'
-const toggleCls = 'flex items-center justify-between gap-1 rounded-3 border border-outline-gray-1 bg-surface-gray-1 px-3 py-2 text-xs font-medium text-ink-gray-7 shadow-sm transition-all hover:bg-white hover:border-outline-gray-2'
+const toggleCls = 'flex items-center justify-between gap-1 rounded-3 border border-outline-gray-1 bg-surface-gray-1 px-3 py-2 text-xs font-medium text-ink-gray-7 shadow-sm transition-all hover:bg-surface-base hover:border-outline-gray-2'
 
 function handleSlicerChange(e: Event): void {
   const val = (e.target as HTMLSelectElement).value
@@ -1190,7 +1190,7 @@ console.log(exportPng, explainThisChart, recommend);
                 <label :class="labelCls">Show top</label>
                 <div class="flex items-center gap-1">
                   <input type="number" min="1" :max="TOPN_MAX" inputmode="numeric" :class="[selectCls, 'w-20']" :value="config.topN ?? ''" :placeholder="String(DEFAULT_TOPN)" :title="`Top categories to show (max ${TOPN_MAX})`" @change="onTopNInput(($event.target as HTMLInputElement).value)" />
-                  <button v-for="p in TOPN_PRESETS" :key="p.label" type="button" class="rounded-3 border px-2 py-1.5 text-[11px] font-semibold shadow-sm transition-all" :class="config.topN === p.value ? 'border-primary-5 bg-primary-5 text-white' : 'border-outline-gray-2 bg-white text-ink-gray-7 hover:border-primary-4 hover:text-primary-6'" :title="p.label === 'All' ? `Show up to ${TOPN_MAX}` : `Show top ${p.value}`" @click="setTopN(p.value)">{{ p.label }}</button>
+                  <button v-for="p in TOPN_PRESETS" :key="p.label" type="button" class="rounded-3 border px-2 py-1.5 text-[11px] font-semibold shadow-sm transition-all" :class="config.topN === p.value ? 'border-primary-5 bg-primary-5 text-white' : 'border-outline-gray-2 bg-surface-base text-ink-gray-7 hover:border-primary-4 hover:text-primary-6'" :title="p.label === 'All' ? `Show up to ${TOPN_MAX}` : `Show top ${p.value}`" @click="setTopN(p.value)">{{ p.label }}</button>
                 </div>
               </div>
               <div v-if="config.chartType !== 'slicer'">
@@ -1323,7 +1323,7 @@ console.log(exportPng, explainThisChart, recommend);
                 </select>
               </div>
               
-              <button type="button" class="mt-2 w-full rounded-3 border border-outline-gray-2 bg-white px-2 py-1.5 text-xs font-semibold text-ink-gray-6 shadow-sm transition-all hover:border-outline-gray-3 hover:bg-surface-gray-1 hover:text-ink-gray-8" @click="resetStyle">
+              <button type="button" class="mt-2 w-full rounded-3 border border-outline-gray-2 bg-surface-base px-2 py-1.5 text-xs font-semibold text-ink-gray-6 shadow-sm transition-all hover:border-outline-gray-3 hover:bg-surface-gray-1 hover:text-ink-gray-8" @click="resetStyle">
                 Reset Style to Default
               </button>
             </div>

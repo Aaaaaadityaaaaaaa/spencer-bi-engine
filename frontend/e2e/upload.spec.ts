@@ -7,8 +7,9 @@ test.describe('2. Data Ingestion & Upload', () => {
   const userEmail = `upload_test_${Date.now()}@example.com`;
   const password = 'TestPassword123!';
 
+  let page: any;
   test.beforeAll(async ({ browser }) => {
-    const page = await browser.newPage();
+    page = await browser.newPage();
     await page.goto('http://localhost:5173/login');
     await page.getByRole('button', { name: 'Register', exact: true }).first().click();
     await page.fill('input[type="email"]', userEmail);
@@ -16,19 +17,10 @@ test.describe('2. Data Ingestion & Upload', () => {
 
     await page.locator('button[type="submit"]').click();
     await expect(page).toHaveURL(/.*\/table/, { timeout: 10000 });
-    await page.close();
   });
 
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/login');
-    await page.getByRole('button', { name: 'Sign in', exact: true }).first().click();
-    await page.fill('input[type="email"]', userEmail);
-    await page.fill('input[type="password"]', password);
-    await page.locator('button[type="submit"]').click();
-    await expect(page).toHaveURL(/.*\/table/, { timeout: 10000 });
-  });
 
-  test('2.1 File Upload - Happy Path (CSV)', async ({ page }) => {
+  test('2.1 File Upload - Happy Path (CSV)', async () => {
     // Wait for dropzone to be visible
     await expect(page.getByText('Drag and drop, or click to browse', { exact: false })).toBeVisible();
     

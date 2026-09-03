@@ -7,8 +7,9 @@ test.describe('7. Canvas & Dashboard System', () => {
   const userEmail = `canvas_test_${Date.now()}@example.com`;
   const password = 'TestPassword123!';
 
+  let page: any;
   test.beforeAll(async ({ browser }) => {
-    const page = await browser.newPage();
+    page = await browser.newPage();
     await page.goto('http://localhost:5173/login');
     await page.getByRole('button', { name: 'Register', exact: true }).first().click();
     await page.fill('input[type="email"]', userEmail);
@@ -18,29 +19,19 @@ test.describe('7. Canvas & Dashboard System', () => {
     await expect(page).toHaveURL(/.*\/table/, { timeout: 10000 });
 
     // Upload dirty data
-    const filePath = path.join(process.cwd(), 'e2e', 'fixtures', 'dirty_data.csv');
+    let filePath = path.join(process.cwd(), 'e2e', 'fixtures', 'dirty_data.csv');
     await page.setInputFiles('input[type="file"]', filePath);
     await expect(page.getByText('dirty_data.csv', { exact: false })).toBeVisible({ timeout: 15000 });
   
     
     
-    await page.close();
   });
 
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/login');
-    await page.getByRole('button', { name: 'Sign in', exact: true }).first().click();
-    await page.fill('input[type="email"]', userEmail);
-    await page.fill('input[type="password"]', password);
-    await page.locator('button[type="submit"]').click();
-    await expect(page).toHaveURL(/.*\/table/, { timeout: 10000 });
-    
-    // Navigate to Canvas
+
+  test('7.1 Chart Creation', async () => {
     await page.getByRole('link', { name: 'Canvas' }).click();
     await expect(page).toHaveURL(/.*\/canvas/);
-  });
 
-  test('7.1 Chart Creation', async ({ page }) => {
     // There might be auto-seeded charts
     
     // Click Add Chart
@@ -50,26 +41,26 @@ test.describe('7. Canvas & Dashboard System', () => {
     await page.getByRole('button', { name: 'Add KPI' }).click();
     
     // At least 2 tiles should be on the canvas
-    await expect(page.locator('.grid-item')).toHaveCount(2);
+    expect(await page.locator('.vgl-item').count()).toBeGreaterThanOrEqual(2);
   });
 
-  test('7.2 Chart Settings Drawer', async ({ page }) => {
+  test('7.2 Chart Settings Drawer', async () => {
     // Click the first tile to open settings drawer
-    await page.locator('.grid-item').first().click();
+    await page.locator('.vgl-item', { has: page.locator('.echarts') }).first().click();
     
     // Wait for drawer
-    await expect(page.locator('text=Data & Mapping')).toBeVisible();
+    await expect(page.locator('text=Chart Settings')).toBeVisible();
     
     // Change Chart Type
     await page.locator('select').first().selectOption('pie');
     
     // Drawer should still be open
-    await expect(page.locator('text=Data & Mapping')).toBeVisible();
+    await expect(page.locator('text=Chart Settings')).toBeVisible();
   });
 
-  test('7.7 Multi-Page Dashboards', async ({ page }) => {
+  test('7.7 Multi-Page Dashboards', async () => {
     // Add page
-    await page.getByRole('button', { name: '+' }).click(); // The plus button for tabs
+    await page.getByTitle('Add a page').click(); // The plus button for tabs
     
     // Check new tab exists
     await expect(page.locator('text=Page 2')).toBeVisible();

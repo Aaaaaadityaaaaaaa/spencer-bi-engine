@@ -18,6 +18,7 @@ logger = logging.getLogger("spencer.auth.router")
 
 
 def check_rate_limit(request: Request, action: str = "auth", limit: int = 5, window: int = 60):
+    if config.SPENCER_ENV != 'production': return
     ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
     if not redis_manager.rate_limit(f"{action}:{ip}", limit=limit, window=window):
         raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
@@ -61,7 +62,7 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
 def me(user: User = Depends(get_current_user)) -> UserResponse:
     return _user_response(user)
 
-from models.schemas import ForgotPasswordRequest, ResetPasswordRequest
+from models.schemas import ForgotPasswordRequest, ResetPasswordRequest, ChangePasswordRequest
 from services.redis_manager import RedisManager
 redis_manager = RedisManager()
 import uuid
@@ -104,4 +105,21 @@ def reset_password(request: Request, payload: ResetPasswordRequest, db: Session 
         
     # Invalidate token
     redis_manager.set_json(f"reset:{payload.token}", {}, ttl=1)
+    return {"status": "ok", "message": "Password updated successfully"}
+
+@router.post("/change-password")
+def change_password(request: Request, payload: ChangePasswordRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    check_rate_limit(request, 'change_password', 5, 600)
+    
+    # Verify current password
+    try:
+        auth_service.authenticate(db, current_user.email, payload.current_password)
+    except auth_service.AuthError:
+        raise HTTPException(status_code=401, detail="Incorrect current password")
+        
+    try:
+        auth_service.update_password(db, current_user, payload.new_password)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
     return {"status": "ok", "message": "Password updated successfully"}

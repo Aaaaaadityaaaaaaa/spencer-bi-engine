@@ -138,12 +138,10 @@ const navItems = [
   { label: 'Model', icon: Network, to: '/model' },
   { label: 'Canvas', icon: BarChart3, to: '/canvas' },
   { label: 'Query Engine', icon: Database, to: '/query' },
+  { label: 'Settings', icon: Settings, to: '/settings' },
 ]
 
-// Roadmap surfaces — inert until their tasks land (kept visible so the plan stays legible).
-const futureItems = [
-  { label: 'Settings', icon: Settings },
-]
+
 
 // Command palette registry (Batch 1). Each action is a plain callback so this stays
 // decoupled from view internals; add new commands here as features land.
@@ -199,46 +197,29 @@ const commands = computed<Command[]>(() => [
         >
           <a
             :href="href"
-            class="group relative flex items-center gap-3 rounded-3 px-3 py-2 text-sm font-medium transition-all duration-200 ease-out hover:bg-white/60"
+            class="group relative flex items-center gap-3 rounded-3 px-3 py-2 text-sm font-medium transition-all duration-200 ease-out hover:bg-surface-gray-2"
             :class="isActive
-              ? 'bg-white text-primary-7 shadow-sm ring-1 ring-outline-gray-2/50'
+              ? 'bg-surface-base text-primary-7 shadow-sm ring-1 ring-outline-gray-2/50'
               : 'text-ink-gray-6'"
             :title="collapsed ? item.label : undefined"
             @click="navigate"
           >
             <!-- Animated background pill for active state -->
-            <div v-if="isActive" class="absolute inset-0 rounded-3 bg-white shadow-sm ring-1 ring-outline-gray-2/50 -z-10"></div>
+            <div v-if="isActive" class="absolute inset-0 rounded-3 bg-surface-base shadow-sm ring-1 ring-outline-gray-2/50 -z-10"></div>
             
             <component :is="item.icon" class="h-4 w-4 shrink-0 transition-transform duration-200 group-hover:scale-110" />
             <span v-if="!collapsed" class="truncate relative z-10">{{ item.label }}</span>
           </a>
         </RouterLink>
 
-        <!-- Roadmap -->
-        <div class="mt-4 pt-4">
-          <span
-            v-if="!collapsed"
-            class="mb-2 block px-3 text-[10px] font-semibold uppercase tracking-wider text-ink-gray-4"
-          >
-            Coming soon
-          </span>
-          <div
-            v-for="item in futureItems"
-            :key="item.label"
-            class="flex cursor-not-allowed items-center gap-3 rounded-3 px-3 py-2 text-sm font-medium text-ink-gray-4 transition-colors"
-            :title="collapsed ? item.label : undefined"
-          >
-            <component :is="item.icon" class="h-4 w-4 shrink-0 opacity-50" />
-            <span v-if="!collapsed" class="truncate">{{ item.label }}</span>
-          </div>
-        </div>
+
       </nav>
 
       <!-- Sidebar footer -->
       <div class="mt-auto border-t border-outline-gray-2/40 p-3 flex flex-col gap-1.5">
         <button
           type="button"
-          class="flex items-center gap-3 rounded-3 px-3 py-2 text-sm font-medium text-ink-gray-5 transition-all duration-200 hover:bg-white/60 hover:text-ink-gray-8"
+          class="flex items-center gap-3 rounded-3 px-3 py-2 text-sm font-medium text-ink-gray-5 transition-all duration-200 hover:bg-surface-gray-2 hover:text-ink-gray-8"
           :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
           @click="collapsed = !collapsed"
         >
@@ -256,7 +237,7 @@ const commands = computed<Command[]>(() => [
           </div>
           <button
             type="button"
-            class="shrink-0 rounded-2 p-1 text-ink-gray-4 transition-colors hover:bg-white hover:text-ink-red hover:shadow-sm"
+            class="shrink-0 rounded-2 p-1 text-ink-gray-4 transition-colors hover:bg-surface-base hover:text-ink-red hover:shadow-sm"
             title="Sign out"
             @click="onLogout"
           >
@@ -266,7 +247,7 @@ const commands = computed<Command[]>(() => [
         <button
           v-if="collapsed"
           type="button"
-          class="flex w-full items-center justify-center rounded-3 px-3 py-2 text-ink-gray-5 transition-colors hover:bg-white/60 hover:text-ink-red"
+          class="flex w-full items-center justify-center rounded-3 px-3 py-2 text-ink-gray-5 transition-colors hover:bg-surface-gray-2 hover:text-ink-red"
           title="Sign out"
           @click="onLogout"
         >
@@ -298,7 +279,7 @@ const commands = computed<Command[]>(() => [
           >
             <Search class="h-4 w-4" />
             <span class="hidden md:inline">Search</span>
-            <kbd class="ml-1 hidden rounded-1 border border-outline-gray-2 bg-white px-1 text-[10px] text-ink-gray-4 md:inline shadow-sm">⌘K</kbd>
+            <kbd class="ml-1 hidden rounded-1 border border-outline-gray-2 bg-surface-base px-1 text-[10px] text-ink-gray-4 md:inline shadow-sm">⌘K</kbd>
           </button>
           
           <div class="w-px h-4 bg-outline-gray-2 mx-1 hidden sm:block"></div>

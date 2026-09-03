@@ -5,6 +5,7 @@ import ModelView from '../views/ModelView.vue'
 import CanvasView from '../views/CanvasView.vue'
 import QueryEngineView from '../views/QueryEngineView.vue'
 import AuthView from '../views/AuthView.vue'
+import SettingsView from '../views/SettingsView.vue'
 import { useAuth } from '../composables/useAuth'
 
 // Type-only augmentation so `route.meta.title` is typed everywhere.
@@ -33,6 +34,7 @@ const router = createRouter({
     { path: '/table', name: 'table', component: TableView, meta: { title: 'Table' } },
     { path: '/canvas', name: 'canvas', component: CanvasView, meta: { title: 'Canvas' } },
     { path: '/query', name: 'query', component: QueryEngineView, meta: { title: 'Query Engine' } },
+    { path: '/settings', name: 'settings', component: SettingsView, meta: { title: 'Settings', requiresAuth: true } },
   ],
 })
 
