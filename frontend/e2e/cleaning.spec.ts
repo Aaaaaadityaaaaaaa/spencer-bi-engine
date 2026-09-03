@@ -16,14 +16,20 @@ test.describe('4. Data Cleaning & Transform Operations', () => {
 
     await page.locator('button[type="submit"]').click();
     await expect(page).toHaveURL(/.*\/table/, { timeout: 10000 });
+
+    // Upload dirty data
+    const filePath = path.join(process.cwd(), 'e2e', 'fixtures', 'dirty_data.csv');
+    await page.setInputFiles('input[type="file"]', filePath);
+    await expect(page.getByText('dirty_data.csv', { exact: false })).toBeVisible({ timeout: 15000 });
+  
     
     // Upload dirty data
-    const filePath = path.join(__dirname, 'fixtures', 'dirty_data.csv');
+    const filePath = path.join(process.cwd(), 'e2e', 'fixtures', 'dirty_data.csv');
     await page.setInputFiles('input[type="file"]', filePath);
     
     // Wait for upload to complete
     await expect(page.locator('text=dirty_data.csv')).toBeVisible({ timeout: 15000 });
-    await expect(page.locator('text=Alice')).toBeVisible();
+    await expect(page.getByText('Alice', { exact: false })).toBeVisible();
     await page.close();
   });
 
@@ -41,7 +47,7 @@ test.describe('4. Data Cleaning & Transform Operations', () => {
 
   test('4.2 Remove Duplicates', async ({ page }) => {
     // Charlie is duplicated in dirty_data.csv
-    await expect(page.locator('text=Charlie')).toHaveCount(2);
+    await expect(page.getByText('Charlie', { exact: false })).toHaveCount(2);
     
     // Click Dedupe in toolbar
     await page.getByRole('button', { name: 'Remove duplicates' }).click();
@@ -51,7 +57,7 @@ test.describe('4. Data Cleaning & Transform Operations', () => {
     await page.getByRole('button', { name: 'Apply' }).click();
     
     // Should now only be 1 Charlie
-    await expect(page.locator('text=Charlie')).toHaveCount(1);
+    await expect(page.getByText('Charlie', { exact: false })).toHaveCount(1);
   });
 
   test('4.1 Drop Nulls', async ({ page }) => {
@@ -65,7 +71,7 @@ test.describe('4. Data Cleaning & Transform Operations', () => {
     await page.getByRole('button', { name: 'Apply' }).click();
     
     // Dave should be gone
-    await expect(page.locator('text=Dave')).not.toBeVisible();
+    await expect(page.getByText('Dave', { exact: false })).not.toBeVisible();
   });
 
   test('4.1 Fill Nulls', async ({ page }) => {

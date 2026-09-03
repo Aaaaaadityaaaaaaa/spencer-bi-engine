@@ -16,11 +16,14 @@ test.describe('8. Query Engine', () => {
 
     await page.locator('button[type="submit"]').click();
     await expect(page).toHaveURL(/.*\/table/, { timeout: 10000 });
-    
+
     // Upload dirty data
-    const filePath = path.join(__dirname, 'fixtures', 'dirty_data.csv');
+    const filePath = path.join(process.cwd(), 'e2e', 'fixtures', 'dirty_data.csv');
     await page.setInputFiles('input[type="file"]', filePath);
-    await expect(page.locator('text=dirty_data.csv')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('dirty_data.csv', { exact: false })).toBeVisible({ timeout: 15000 });
+  
+    
+    
     await page.close();
   });
 
@@ -40,7 +43,7 @@ test.describe('8. Query Engine', () => {
   test('8.2 SQL Editor & Execution', async ({ page }) => {
     // We can't easily type into CodeMirror with standard Playwright fill() because it's contenteditable
     // We can click and type
-    await page.locator('.cm-content').click();
+    await page.locator('.cm-editor').click();
     
     // Select all and delete default text (if any)
     await page.keyboard.press('Control+A');
@@ -75,7 +78,7 @@ test.describe('8. Query Engine', () => {
   });
 
   test('8.4 SQL Security - Block Mutation', async ({ page }) => {
-    await page.locator('.cm-content').click();
+    await page.locator('.cm-editor').click();
     await page.keyboard.press('Control+A');
     await page.keyboard.press('Backspace');
     

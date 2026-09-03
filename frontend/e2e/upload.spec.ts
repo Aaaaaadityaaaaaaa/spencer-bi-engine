@@ -30,17 +30,17 @@ test.describe('2. Data Ingestion & Upload', () => {
 
   test('2.1 File Upload - Happy Path (CSV)', async ({ page }) => {
     // Wait for dropzone to be visible
-    await expect(page.locator('text=Drag & drop a file here')).toBeVisible();
+    await expect(page.getByText('Drag and drop, or click to browse', { exact: false })).toBeVisible();
     
     // Upload file
-    const filePath = path.join(__dirname, 'fixtures', 'test_data.csv');
+    const filePath = path.join(process.cwd(), 'e2e', 'fixtures', 'test_data.csv');
     // Using setInputFiles on the hidden file input
     await page.setInputFiles('input[type="file"]', filePath);
     
     // Expect the file to upload and the grid to render
     // The data grid should eventually show "Alice", "Bob", "Charlie"
-    await expect(page.locator('text=Alice')).toBeVisible({ timeout: 15000 });
-    await expect(page.locator('text=Bob')).toBeVisible();
+    await expect(page.getByText('Alice', { exact: false })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Bob', { exact: false })).toBeVisible();
     
     // The dataset name should be visible in the table switcher or bar
     await expect(page.locator('text=test_data.csv')).toBeVisible();

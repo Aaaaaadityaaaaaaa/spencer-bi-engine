@@ -16,11 +16,14 @@ test.describe('7. Canvas & Dashboard System', () => {
 
     await page.locator('button[type="submit"]').click();
     await expect(page).toHaveURL(/.*\/table/, { timeout: 10000 });
-    
+
     // Upload dirty data
-    const filePath = path.join(__dirname, 'fixtures', 'dirty_data.csv');
+    const filePath = path.join(process.cwd(), 'e2e', 'fixtures', 'dirty_data.csv');
     await page.setInputFiles('input[type="file"]', filePath);
-    await expect(page.locator('text=dirty_data.csv')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('dirty_data.csv', { exact: false })).toBeVisible({ timeout: 15000 });
+  
+    
+    
     await page.close();
   });
 
@@ -41,7 +44,7 @@ test.describe('7. Canvas & Dashboard System', () => {
     // There might be auto-seeded charts
     
     // Click Add Chart
-    await page.getByRole('button', { name: 'Add Chart' }).click();
+    await page.getByRole('button', { name: 'Add chart' }).click();
     
     // Click Add KPI
     await page.getByRole('button', { name: 'Add KPI' }).click();

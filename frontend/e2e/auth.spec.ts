@@ -38,7 +38,7 @@ test.describe('1. Authentication & Security', () => {
     await page.locator('button[type="submit"]').click();
     
     // Expect error message
-    await expect(page.locator('text=already registered')).toBeVisible();
+    await expect(page.getByText('already registered', { exact: false })).toBeVisible();
   });
 
   test('1.2 Login - Wrong Password', async ({ page }) => {
