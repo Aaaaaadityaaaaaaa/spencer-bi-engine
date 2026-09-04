@@ -76,7 +76,7 @@
                 <div class="flex items-center gap-3">
                   <input type="color" :value="swatch" @input="dashboardSettings.accent = ($event.target as HTMLInputElement).value" class="h-8 w-12 cursor-pointer rounded-2 border border-outline-gray-2 bg-transparent" />
                   <input type="text" v-model="hexText" placeholder="#hex / blank = brand" class="w-40 rounded-2 border border-outline-gray-2 bg-surface-base px-3 py-1.5 text-xs text-ink-gray-8" />
-                  <button v-if="dashboardSettings.accent" type="button" class="text-[11px] text-ink-gray-5 underline-offset-2 hover:text-primary hover:underline" @click="dashboardSettings.accent = null">Reset to brand default</button>
+                  <button v-if="dashboardSettings.accent && dashboardSettings.accent !== '#000000'" type="button" class="text-[11px] text-ink-gray-5 underline-offset-2 hover:text-primary hover:underline" @click="dashboardSettings.accent = '#000000'">Reset to brand default</button>
                 </div>
               </div>
             </div>
@@ -387,7 +387,7 @@ const hexText = computed({
   get: () => (dashboardSettings.accent ? dashboardSettings.accent : ''),
   set: (v: string) => {
     const norm = normalizeHex(v)
-    dashboardSettings.accent = norm 
+    dashboardSettings.accent = norm || '#000000'
   },
 })
 

@@ -32,7 +32,7 @@ function clampInt(n: unknown, lo: number, hi: number, fallback: number): number 
 }
 
 function load(): DashboardSettings {
-  const fallback: DashboardSettings = { decimalPlaces: 0, thousands: true, compact: false, accent: null, showValues: false, paletteId: null }
+  const fallback: DashboardSettings = { decimalPlaces: 0, thousands: true, compact: false, accent: '#000000', showValues: false, paletteId: 'monochrome' }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return fallback
@@ -123,9 +123,9 @@ export function resetDashboardSettings(): void {
   dashboardSettings.decimalPlaces = 0
   dashboardSettings.thousands = true
   dashboardSettings.compact = false
-  dashboardSettings.accent = null
+  dashboardSettings.accent = '#000000'
   dashboardSettings.showValues = false
-  dashboardSettings.paletteId = null
+  dashboardSettings.paletteId = 'monochrome'
 }
 
 export function useDashboardSettings() {

@@ -29,7 +29,7 @@ const router = createRouter({
       component: ModelView,
       meta: { title: 'Spencer BI | Model', requiresAuth: true }
     },
-    { path: '/', redirect: '/table' },
+    { path: '/', name: 'landing', component: () => import('../views/LandingView.vue'), meta: { title: 'Spencer BI Engine - The AI-First Data Engine', public: true } },
     { path: '/login', name: 'login', component: AuthView, meta: { title: 'Sign in', public: true } },
     { path: '/table', name: 'table', component: TableView, meta: { title: 'Table' } },
     { path: '/canvas', name: 'canvas', component: CanvasView, meta: { title: 'Canvas' } },

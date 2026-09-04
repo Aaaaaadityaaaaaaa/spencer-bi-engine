@@ -15,6 +15,7 @@ import {
   X,
   Search,
   Keyboard,
+
 } from '@lucide/vue'
 import { useSession } from './composables/useSession'
 import { useAuth } from './composables/useAuth'
@@ -25,9 +26,12 @@ import TableSwitcher from './components/TableSwitcher.vue'
 import CommandPalette, { type Command } from './components/CommandPalette.vue'
 import ToastHost from './components/ToastHost.vue'
 
+
+
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
+
 const paletteOpen = ref(false)
 const cheatsheetOpen = ref(false)
 
@@ -168,7 +172,7 @@ const commands = computed<Command[]>(() => [
 </script>
 
 <template>
-  <div v-if="isAuthenticated" class="flex h-screen bg-surface-gray-1 font-sans text-ink-gray-8 p-0 sm:p-2 md:p-3 overflow-hidden bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-primary-2/30 via-surface-gray-1 to-surface-gray-2 relative">
+  <div v-if="isAuthenticated && !route.meta.public" class="flex h-screen bg-surface-gray-1 font-sans text-ink-gray-8 p-0 sm:p-2 md:p-3 overflow-hidden bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-primary-2/30 via-surface-gray-1 to-surface-gray-2 relative">
     
     <!-- Decorative subtle glows for the mesh gradient -->
     <div class="pointer-events-none absolute -top-40 -right-40 h-[500px] w-[500px] rounded-full bg-primary-3/20 blur-[100px]"></div>
@@ -293,6 +297,8 @@ const commands = computed<Command[]>(() => [
           >
             <Keyboard class="h-4 w-4" />
           </button>
+
+          
           
           <button
             type="button"
@@ -403,4 +409,5 @@ const commands = computed<Command[]>(() => [
 
   <router-view v-else />
   <ToastHost />
+  
 </template>

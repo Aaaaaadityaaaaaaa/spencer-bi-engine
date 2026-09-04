@@ -22,12 +22,12 @@ const hexText = computed({
   get: () => (dashboardSettings.accent ? dashboardSettings.accent : ''),
   set: (v: string) => {
     const norm = normalizeHex(v)
-    dashboardSettings.accent = norm // null clears back to the brand default
+    dashboardSettings.accent = norm || '#000000'
   },
 })
 
 function clearAccent(): void {
-  dashboardSettings.accent = null
+  dashboardSettings.accent = '#000000'
 }
 
 const decimalOptions = [0, 1, 2, 3, 4]

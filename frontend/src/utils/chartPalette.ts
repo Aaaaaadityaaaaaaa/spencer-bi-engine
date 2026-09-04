@@ -38,6 +38,14 @@ export interface NamedPalette {
 export const CHART_PALETTES: NamedPalette[] = [
   { id: 'default', label: 'Spencer (Default)', colors: [...CHART_PALETTE] },
   {
+    id: 'monochrome',
+    label: 'Black (Monochrome)',
+    colors: [
+      '#000000', '#27272a', '#52525b', '#71717a', '#a1a1aa',
+      '#d4d4d8', '#e4e4e7', '#f4f4f5', '#ffffff', '#09090b',
+    ],
+  },
+  {
     id: 'category10',
     label: 'Category 10',
     colors: [

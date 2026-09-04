@@ -1506,7 +1506,7 @@ console.log(exportPng, explainThisChart, recommend);
             class="shrink-0 rounded-2 border border-outline-gray-2 px-2 py-1 text-[11px] transition-colors hover:bg-surface-gray-2"
             :class="config.color ? 'text-ink-gray-7' : 'text-primary'"
             title="Default (brand) colour"
-            @click="pickColor(null)"
+            @click="pickColor('#000000')"
           >
             Auto
           </button>
